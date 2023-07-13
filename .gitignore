@@ -1,0 +1,11 @@
+# created by virtualenv automatically
+data/*
+bin
+lib
+__pycache__/*
+.idea/*
+*cfg
+share/*
+log/*
+*/log/*
+*/*/log/*
