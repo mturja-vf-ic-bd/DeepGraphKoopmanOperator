@@ -105,7 +105,7 @@ def form_complex_conjugate_block(omegas, delta_t, k=1):
     Side effects:
         None
     """
-    scale = torch.exp(omegas[:, :, 1] * delta_t * k)
+    scale = torch.exp(torch.ones_like(omegas[:, :, 1]) * delta_t * k)
     entry11 = torch.mul(scale, torch.cos(omegas[:, :, 0] * delta_t * k))
     entry12 = torch.mul(scale, torch.sin(omegas[:, :, 0] * delta_t * k))
     row1 = torch.stack([entry11, -entry12], dim=-1)  # [None, None, 2]

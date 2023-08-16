@@ -64,7 +64,6 @@ class KNF_Embedder(nn.Module):
             input_dim,
             input_length,
             u_window_size,
-            num_steps,
             encoder_hidden_dim,
             decoder_hidden_dim,
             encoder_num_layers,
@@ -84,7 +83,6 @@ class KNF_Embedder(nn.Module):
         self.input_dim = input_dim
         self.input_length = input_length
         self.u_window_size = u_window_size
-        self.num_steps = num_steps
         self.encoder_hidden_dim = encoder_hidden_dim
         self.decoder_hidden_dim = decoder_hidden_dim
         self.encoder_num_layers = encoder_num_layers
@@ -100,13 +98,15 @@ class KNF_Embedder(nn.Module):
             width_list=[input_dim * num_feats] +
                        [self.encoder_hidden_dim] * self.encoder_num_layers +
                        [latent_dim * input_dim * num_feats],
-            prefix="encoder"
+            prefix="encoder",
+            norm="instance"
         )
         self.decoder = MLP(
-            width_list=[latent_dim * num_feats] +
+            width_list=[(self.latent_dim - 2 * self.num_sins) * num_feats] +
                        [self.decoder_hidden_dim] * self.decoder_num_layers +
                        [input_dim * num_feats],
-            prefix="decoder"
+            prefix="decoder",
+            norm="instance"
         )
         self.U = nn.Linear(u_window_size // input_dim,
                            n_real_dmd_modes + n_complex_dmd_mode_pairs)
@@ -118,8 +118,10 @@ class KNF_Embedder(nn.Module):
             self.encoder_layer, num_layers=transformer_num_layers)
         self.omegas = MLP(
             width_list=[(latent_dim - 2 * num_sins) * num_feats,
-                        128, 128, n_real_dmd_modes + 2 * n_complex_dmd_mode_pairs],
-            prefix="omega_net")
+                        256, 256, 256,
+                        n_real_dmd_modes + 2 * n_complex_dmd_mode_pairs],
+            norm="instance", prefix="omega_net")
+        self.batch_norm = nn.BatchNorm1d(n_real_dmd_modes + 2 * n_complex_dmd_mode_pairs)
 
     def generate_embeddings(self, x):
         # Create time chunks and flatten
@@ -187,6 +189,7 @@ class KNF_Embedder(nn.Module):
         # Compute common DMD modes for the x_cur
         dmd_modes = self.transformer_encoder(embedding_cur.flatten(start_dim=2))
         dmd_modes = self.U(dmd_modes.transpose(1, 2))
+        dmd_modes = dmd_modes / torch.norm(dmd_modes, dim=1, p="fro", keepdim=True)
         dmd_modes = torch.cat([
             dmd_modes[:, :, :self.n_real_dmd_modes],
             dmd_modes[:, :, self.n_real_dmd_modes:],
@@ -196,7 +199,9 @@ class KNF_Embedder(nn.Module):
 
         # shift latent embeddings to the right
         pred_list_cur = []
+        latent_pred_list_cur = []
         pred_list_next = []
+        latent_pred_list_future = []
         for k in range(1, max_k + 1):
             pred_cur = varying_multiply(
                 embedding_cur.flatten(start_dim=2),
@@ -204,27 +209,37 @@ class KNF_Embedder(nn.Module):
                 omegas=omega_cur,
                 num_real=self.n_real_dmd_modes,
                 num_complex_pairs=self.n_complex_dmd_mode_pairs,
-                delta_t=0.72, k=k
+                delta_t=1, k=k
             )
-            pred_list_cur.append(pred_cur)
+            latent_pred_list_cur.append(pred_cur)
+            pred_list_cur.append(self.decoder(pred_cur).reshape(
+                pred_cur.shape[0], pred_cur.shape[1],
+                -1, self.num_feats).reshape(
+                pred_cur.shape[0], -1, self.num_feats))
             pred_future = varying_multiply(
                 embedding_future.flatten(start_dim=2),
                 U=dmd_modes,
                 omegas=omega_future,
                 num_real=self.n_real_dmd_modes,
                 num_complex_pairs=self.n_complex_dmd_mode_pairs,
-                delta_t=0.72, k=k
+                delta_t=1, k=k
             )
-            pred_list_next.append(pred_future)
+            latent_pred_list_future.append(pred_future)
+            pred_list_next.append(self.decoder(
+                pred_future.flatten(start_dim=2)).reshape(
+                pred_future.shape[0], pred_future.shape[1],
+                -1, self.num_feats).reshape(
+                pred_future.shape[0], -1, self.num_feats))
 
         # Reconstruct V back to original space
-        X_recon_cur = self.decoder(V_cur.flatten(start_dim=2))
-        X_recon_future = self.decoder(V_future.flatten(start_dim=2))
+        X_recon_cur = self.decoder(embedding_cur.flatten(start_dim=2))
+        X_recon_future = self.decoder(embedding_future.flatten(start_dim=2))
 
         return V_cur, V_future, X_cur, X_future, \
-               X_recon_cur, X_recon_future, embedding_cur, \
+               X_recon_cur, X_recon_future, embedding_cur, embedding_future, \
                dmd_modes, omega_cur, omega_future, \
-               pred_list_cur, pred_list_next
+               pred_list_cur, pred_list_next, \
+               latent_pred_list_cur, latent_pred_list_future
 
 
 def compute_prediction_loss(x_orig, x_pred_list):
@@ -245,7 +260,7 @@ class testKNF_Embedder(unittest.TestCase):
         latent_dim = 24
         num_sins = 2
         model = KNF_Embedder(input_dim, ts, u_window,
-                             5, 256, 256, 3, 3,
+                             256, 256, 3, 3,
                              transformer_dim=128,
                              transformer_num_layers=3,
                              num_heads=4, latent_dim=latent_dim,
@@ -254,14 +269,14 @@ class testKNF_Embedder(unittest.TestCase):
                              num_feats=50)
         x = torch.FloatTensor(torch.randn(batch, n_nodes, ts))
         V_cur, V_future, X_cur, X_future, \
-            X_recon_cur, X_recon_future, embeddings, emb_trans, \
+            X_recon_cur, X_recon_future, embeddings_cur, embeddings_future, emb_trans, \
                 omega_cur, omega_future, \
                     pred_list_cur, pred_list_next = model(x, max_k=3)
         self.assertEqual(V_cur.shape, (batch, u_window // input_dim, 24, n_nodes))
         self.assertEqual(X_cur.shape, X_recon_cur.shape)
         self.assertEqual(V_future.shape, (batch, (ts - u_window) // input_dim, 24, n_nodes))
         self.assertEqual(X_recon_future.shape, X_future.shape)
-        self.assertEqual(embeddings.shape, (batch, u_window // input_dim, 20, n_nodes))
+        self.assertEqual(embeddings_cur.shape, (batch, u_window // input_dim, 20, n_nodes))
         self.assertEqual(emb_trans.shape, (batch, (latent_dim - 2 * num_sins) * n_nodes, 11))
         self.assertEqual(omega_cur.shape, (batch, u_window // input_dim, 11))
         self.assertEqual(omega_future.shape, (batch, (ts - u_window) // input_dim, 11))

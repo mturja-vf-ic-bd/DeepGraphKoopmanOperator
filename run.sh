@@ -1,0 +1,2 @@
+python3 -m trainers.varKNF -m 100 --lr 0.0001 --mode train --batch_size 64 --latent_dim 48 --n_real_modes 5 --n_complex_modes 8 --hidden_dim 512 --num_layers 4 --use_revin --use_instancenorm --add_global_operator --add_control --jumps 128 &> varKNFexp.txt
+python3 -m trainers.varKNF -m 100 --lr 0.0001 --mode train --batch_size 64 --stride 16 --decay 0.95 --num_steps 48 --latent_dim 64 --n_real_modes 5 --n_complex_modes 10 --hidden_dim 1024 --num_layers 3 --output_length 16 --use_revin --jumps 128 &>> stride16_fixed_step_48.txt

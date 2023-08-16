@@ -1,37 +1,45 @@
+import unittest
 from collections import OrderedDict
 import torch.nn as nn
 
 
 class MLP(nn.Module):
-    def __init__(self,
-                 width_list,
-                 prefix="mlp",
-                 activation=nn.ReLU(),
-                 dropout=0.01):
+    """MLP module used in the main Koopman architecture.
 
-        """
-        Create a multi-layer perceptron from the given dimension list.
-        Adds dropout and activations expect the last layer.
+    Attributes:
+      input_dim: number of features
+      output_dim: output dimension of encoder
+      hidden_dim: hidden dimension of encoder
+      num_layers: number of layers
+      use_instancenorm: whether to use instance normalization
+      dropout_rate: dropout rate
+    """
 
-        :param width_list: list of dimensions of the layers
-        including input and output layer. Ex. [10, 32, 32, 2]
-        will create a MLP with input dimension = 10 and 2 hidden layer
-        with dimension 32 and output layer dimension 2.
-        :param prefix: a string that will be prepended in the layer names.
-        :param activation: non-linear activation after each layer of the mlp
-        :param dropout: dropout value
-        """
+    def __init__(
+            self,
+            input_dim,
+            output_dim,
+            hidden_dim,
+            num_layers,
+            use_instancenorm=False,
+            dropout_rate=0
+    ):
+        super().__init__()
 
-        super(MLP, self).__init__()
-        layer_dict = OrderedDict()
-        drop = nn.Dropout(dropout) if dropout > 0 else nn.Identity()
-        for i in range(1, len(width_list)):
-            layer_dict[prefix + "_linear_" + str(i)] = nn.Linear(width_list[i - 1], width_list[i])
-            if i != len(width_list) - 2:
-                layer_dict[prefix + "_act_" + str(i)] = activation
-            if i <= len(width_list) - 2:
-                layer_dict[prefix + "_drop_" + str(i)] = drop
-        self.mlp = nn.Sequential(layer_dict)
+        model = [nn.Linear(input_dim, hidden_dim)]
+        if use_instancenorm:
+            model += [nn.InstanceNorm1d(hidden_dim)]
+        model += [nn.ReLU(), nn.Dropout(dropout_rate)]
 
-    def forward(self, x):
-        return self.mlp(x)
+        for _ in range(num_layers - 2):
+            model += [nn.Linear(hidden_dim, hidden_dim)]
+            if use_instancenorm:
+                model += [nn.InstanceNorm1d(hidden_dim)]
+            model += [nn.ReLU(), nn.Dropout(dropout_rate)]
+        model += [nn.Linear(hidden_dim, output_dim)]
+
+        self.model = nn.Sequential(*model)
+
+    def forward(self, inps):
+        # expected input dims (batch size, sequence length, number of features)
+        return self.model(inps)

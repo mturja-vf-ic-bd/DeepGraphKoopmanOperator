@@ -9,3 +9,9 @@ share/*
 log/*
 */log/*
 */*/log/*
+*/*pt
+*/*pth
+*/*ckpt
+*ckpt
+*pt
+*pth

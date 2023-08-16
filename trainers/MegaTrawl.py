@@ -9,63 +9,78 @@ import scipy.io
 import torch
 import torch.nn as nn
 import pytorch_lightning as pl
-from pytorch_lightning.callbacks import ModelCheckpoint, RichProgressBar
-from pytorch_lightning.callbacks.progress.rich_progress import RichProgressBarTheme
+from pytorch_lightning.callbacks import ModelCheckpoint
 from pytorch_lightning import loggers as pl_loggers
 
 from dataloaders.MegaTrawl import MegaTrawlDataModule
-from models.DeepKoopman import KoopmanAutoencoder
+from models.KNF import KNF_Embedder, compute_prediction_loss
 from utils.folder_manager import create_version_dir
-from utils.correlation import pearson
 
 
 class trainerSparseEdgeKoopman(pl.LightningModule):
     def __init__(self,
-                 encoder_width_list: List[int] = None,
-                 decoder_width_list: List[int] = None,
-                 edge_proj_width_list: List[int] = None,
-                 edge_func_enc_width: List[int] = None,
-                 edge_func_dec_width: List[int] = None,
-                 edge_func_proj_width: List[int] = None,
-                 num_nodes=50,
-                 look_back_window=10,
+                 input_dim,
+                 input_length,
+                 u_window_size,
+                 encoder_hidden_dim=256,
+                 decoder_hidden_dim=256,
+                 encoder_num_layers=5,
+                 decoder_num_layers=5,
+                 n_real_dmd_modes=1,
+                 n_complex_dmd_mode_pairs=15,
+                 transformer_dim=256,
+                 transformer_num_layers=5,
+                 num_heads=1,
+                 latent_dim=24,
+                 num_sins=2,
+                 num_poly=2,
+                 num_exp=0,
+                 num_feats=50,
                  lr=1e-4,
-                 loss_weights=None):
+                 num_steps=1,
+                 loss_weights: List[int] = None):
         super(trainerSparseEdgeKoopman, self).__init__()
 
-        if encoder_width_list is None:
-            encoder_width_list = [16, 128, 128, 128, 32]
-        if decoder_width_list is None:
-            decoder_width_list = encoder_width_list[::-1]
-        if edge_proj_width_list is None:
-            edge_proj_width_list = [1, 16, 16, 1]
-        if edge_func_enc_width is None:
-            edge_func_enc_width = [256, 128, 128, 128, 32]
-        if edge_func_dec_width is None:
-            edge_func_dec_width = edge_func_enc_width[::-1]
-        if edge_func_proj_width is None:
-            edge_func_proj_width = [1, 16, 16, 1]
-
-        self.model = KoopmanAutoencoder(
-            num_nodes=num_nodes,
-            num_real_modes=3,
-            num_complex_modes=4,
-            delta_t=0.72,
-            encoder_width_list=encoder_width_list,
-            decoder_width_list=decoder_width_list,
-            edge_proj_width_list=edge_proj_width_list,
-            edge_func_enc_width=edge_func_enc_width,
-            edge_func_dec_width=edge_func_dec_width,
-            edge_func_proj_width=edge_func_proj_width,
-            activation=nn.ReLU()
-        )
+        self.input_dim = input_dim
+        self.input_length = input_length
+        self.u_window_size = u_window_size
+        self.encoder_hidden_dim = encoder_hidden_dim
+        self.decoder_hidden_dim = decoder_hidden_dim
+        self.encoder_num_layers = encoder_num_layers
+        self.decoder_num_layers = decoder_num_layers
+        self.n_real_dmd_modes = n_real_dmd_modes
+        self.n_complex_dmd_mode_pairs = n_complex_dmd_mode_pairs
+        self.transformer_dim = transformer_dim
+        self.transformer_num_layers = transformer_num_layers
+        self.num_heads = num_heads
+        self.latent_dim = latent_dim
+        self.num_sins = num_sins
+        self.num_poly = num_poly
+        self.num_exp = num_exp
+        self.num_feats = num_feats
         self.learning_rate = lr
-        self.sw_size = edge_func_enc_width[0]
-        self.look_back_window = look_back_window
-        if loss_weights is not None:
-            self.loss_weights = loss_weights
-        else:
-            self.loss_weights = [1, 1, 1]
+        self.num_steps = num_steps
+        self.model = KNF_Embedder(
+            input_dim=input_dim,
+            input_length=input_length,
+            u_window_size=u_window_size,
+            encoder_hidden_dim=encoder_hidden_dim,
+            encoder_num_layers=encoder_num_layers,
+            decoder_hidden_dim=decoder_hidden_dim,
+            decoder_num_layers=decoder_num_layers,
+            n_real_dmd_modes=n_real_dmd_modes,
+            n_complex_dmd_mode_pairs=n_complex_dmd_mode_pairs,
+            transformer_dim=transformer_dim,
+            transformer_num_layers=transformer_num_layers,
+            num_heads=num_heads,
+            latent_dim=latent_dim,
+            num_sins=num_sins,
+            num_poly=num_poly,
+            num_exp=num_exp,
+            num_feats=num_feats
+        )
+        self.loss_weights = [1, 1, 1, 1, 1, 1] if loss_weights is None \
+                                            else loss_weights
         self.losses = {"train": [], "val": []}
         self.save_hyperparameters()
 
@@ -102,60 +117,100 @@ class trainerSparseEdgeKoopman(pl.LightningModule):
                                 lr=self.learning_rate,
                                 weight_decay=0.001)
 
-    def get_attn(self):
-        return self.model.K
-
     def _common_step(self, batch, batch_idx, category="train"):
         x, s = batch
-        x = x[:, :, 0:(x.shape[2] // self.sw_size) * self.sw_size]
-        x = x.unfold(-1, self.sw_size, self.sw_size).permute(0, 2, 1, 3).flatten(end_dim=1)
-        y, g, g_next_list, U, omega, x_recon = self.model(x.float(), max_k=self.look_back_window)
-        loss_recon = nn.MSELoss(reduction='mean')(x, x_recon)
-        loss_pred = 0
-        for i, g_next in enumerate(g_next_list):
-            loss_pred += nn.MSELoss(reduction='mean')(g[:, :, i+1:], g_next[:, :, :-(i+1)])
-        loss_pred /= len(g_next_list)
-        loss_ortho = torch.matmul(U.transpose(1, 2), U)
+        V_cur, V_future, X_cur, X_future, \
+        X_recon_cur, X_recon_future, \
+            embeddings_cur, embeddings_future, \
+                dmd_modes, omega_cur, omega_future, \
+                    pred_list_cur, pred_list_future, \
+                        latent_pred_list_cur, latent_pred_list_future = \
+                            self.model(x, max_k=self.num_steps)
+        mse_loss = nn.MSELoss(reduction='mean')
+        loss_recon = mse_loss(X_recon_cur, X_cur) + mse_loss(X_recon_future, X_future)
+        loss_latent_pred_cur = compute_prediction_loss(
+            embeddings_cur.flatten(start_dim=2), latent_pred_list_cur)
+        loss_latent_pred_future = compute_prediction_loss(
+            embeddings_future.flatten(start_dim=2), latent_pred_list_future)
+        loss_pred_cur = compute_prediction_loss(x[:, :, :self.u_window_size].transpose(1, 2), pred_list_cur)
+        loss_pred_future = compute_prediction_loss(x[:, :, self.u_window_size:].transpose(1, 2), pred_list_future)
+        loss_ortho = torch.matmul(dmd_modes.transpose(1, 2), dmd_modes)
         loss_ortho = torch.mean(torch.triu(loss_ortho, diagonal=1) ** 2) * 2
-        loss = self.loss_weights[0] * loss_recon + \
-               self.loss_weights[1] * loss_pred + \
-               self.loss_weights[2] * loss_ortho
+        if self.current_epoch > -1:
+            loss = self.loss_weights[0] * loss_recon + \
+                   self.loss_weights[1] * loss_latent_pred_cur + \
+                   self.loss_weights[2] * loss_latent_pred_future + \
+                   self.loss_weights[3] * loss_pred_cur + \
+                   self.loss_weights[4] * loss_pred_future + \
+                   self.loss_weights[5] * loss_ortho
+        else:
+            loss = self.loss_weights[0] * loss_recon
         losses = {
             "loss/recon": loss_recon,
-            "loss/pred": loss_pred,
+            "loss/pred_latent_cur": loss_latent_pred_cur,
+            "loss/pred_latent_future": loss_latent_pred_future,
+            "loss/pred_cur": loss_pred_cur,
+            "loss/pred_future": loss_pred_future,
             "loss/ortho": loss_ortho,
             "loss/total": loss}
         self.add_log(losses, category)
-        progress_bar = {f"{category}_total": loss,
-                        f"{category}_recon": loss_recon,
-                        f"{category}_pred": loss_pred,
-                        f"{category}_ortho": loss_ortho}
+        progress_bar = {f"{category}_total": loss.item(),
+                        f"{category}_recon": loss_recon.item(),
+                        f"{category}_pred_cur": loss_latent_pred_future.item(),
+                        f"{category}_ortho": loss_ortho.item(),
+                        f"{category}_pred_future": loss_latent_pred_future.item()}
         self.losses[category].append(loss)
-        return {'loss': loss, 'progress_bar': progress_bar, 'log': progress_bar}
+        return {'loss': loss, 'progress_bar': progress_bar}
 
     def predict_step(self, batch, batch_idx):
         x, s = batch
-        x = x[:, :, 0:(x.shape[2] // self.sw_size) * self.sw_size]
-        x = x.unfold(-1, self.sw_size, self.sw_size).permute(0, 2, 1, 3).flatten(end_dim=1)
-        y, g, g_next_list, U, omega, x_recon = self.model(x.float())
-        return y, g, g_next_list, U, omega, x_recon
+        # x = x[:, :, 0:(x.shape[2] // self.sw_size) * self.input_dim]
+        # x = x.unfold(-1, self.sw_size, self.sw_size).permute(0, 2, 1, 3).flatten(end_dim=1)
+        V_cur, V_future, X_cur, X_future, \
+        X_recon_cur, X_recon_future, \
+        embeddings_cur, embeddings_future, \
+        dmd_modes, omega_cur, omega_future, \
+        pred_list_cur, pred_list_future, \
+        latent_pred_list_cur, latent_pred_list_future = \
+            self.model(x, max_k=self.num_steps)
+        X_recon_cur = X_recon_cur.reshape(X_recon_cur.shape[0], X_recon_cur.shape[1], -1,
+                                          self.num_feats).reshape(X_recon_cur.shape[0],
+                                                                  -1, self.num_feats).transpose(1, 2)
+        plt.figure(figsize=(50, 50))
+        for i in range(10):
+            plt.subplot(10, 1, i + 1)
+            plt.plot(x[1, i, 0:800].detach().cpu().numpy(), c='b')
+            plt.plot(X_recon_cur[2, i].detach().cpu().numpy(), c='r', linestyle="--")
+        plt.show()
+
+        return pred_list_cur, pred_list_future
 
 
 def cli_main():
     import argparse
     parser = argparse.ArgumentParser()
     parser.add_argument("-g", "--gpus", nargs="?", type=int, default=0)
+    parser.add_argument("-d", "--device", type=int, default=1)
     parser.add_argument("-m", "--max_epochs", nargs="?", type=int, default=100)
     parser.add_argument("--lr", default=1e-3, type=float, help="learning rate")
     parser.add_argument("--mode", choices=["train", "test"], default="train")
     parser.add_argument("--ckpt", type=str, help="Checkpoint file for prediction")
     parser.add_argument("--from_ckpt", dest='from_ckpt', default=False, action='store_true')
-    parser.add_argument("--exp_name", type=str, default="fmri",
+    parser.add_argument("--exp_name", type=str, default="knf",
                         help="Name you experiment")
     parser.add_argument("--write_dir", type=str, default="log/DeepGraphKoopman/MegaTrawl")
     parser.add_argument("--weight", type=float, nargs="+")
     parser.add_argument("--batch_size", type=int, default=8)
     parser.add_argument("--num_nodes", type=int, default=50)
+    parser.add_argument("--input_dim", type=int, default=8)
+    parser.add_argument("--input_length", type=int, default=1200)
+    parser.add_argument("--u_window_size", type=int, default=800)
+    parser.add_argument("--num_pred_steps", type=int, default=5)
+    parser.add_argument("--n_real_modes", type=int, default=1)
+    parser.add_argument("--n_complex_modes", type=int, default=7)
+    parser.add_argument("--encoder_num_layers", type=int, default=5)
+    parser.add_argument("--decoder_num_layers", type=int, default=5)
+    parser.add_argument("--transformer_num_layers", type=int, default=5)
 
     arguments = parser.parse_args()
     print("Hyper-parameters:")
@@ -165,7 +220,7 @@ def cli_main():
     _HOME = os.path.expanduser('~')
     data_loader = MegaTrawlDataModule(batch_size=arguments.batch_size)
     accelerator = "cpu" if arguments.gpus == 0 else "gpu"
-    device = 1
+    device = arguments.device
 
     if arguments.mode == "train":
         # Create write dir
@@ -176,11 +231,11 @@ def cli_main():
         ckpt = ModelCheckpoint(dirpath=os.path.join(write_dir, "checkpoints"),
                                monitor="val/loss/total",
                                every_n_epochs=5,
-                               save_top_k=1,
+                               save_top_k=5,
                                save_last=True,
                                auto_insert_metric_name=False,
-                               filename='epoch-{epoch:02d}-recon_loss-{val/loss/recon:0.3f}-lkis_loss-{'
-                                        'val/loss/pred:0.3f}')
+                               filename='epoch-{epoch:02d}-recon_loss-{val/loss/recon:0.3f}-pred_loss-{'
+                                        'val/loss/pred_cur:0.3f}')
         tb_logger = pl_loggers.TensorBoardLogger(write_dir, name="tb_logs")
         trainer = pl.Trainer(accelerator=accelerator,
                              devices=device,
@@ -190,12 +245,21 @@ def cli_main():
                              callbacks=[ckpt])
         if not arguments.from_ckpt:
             model = trainerSparseEdgeKoopman(
+                input_dim=arguments.input_dim,
+                input_length=arguments.input_length,
+                u_window_size=arguments.u_window_size,
                 loss_weights=arguments.weight,
-                num_nodes=arguments.num_nodes,
-                lr=arguments.lr
+                num_feats=arguments.num_nodes,
+                num_steps=arguments.num_pred_steps,
+                lr=arguments.lr,
+                n_real_dmd_modes=arguments.n_real_modes,
+                n_complex_dmd_mode_pairs=arguments.n_complex_modes,
+                encoder_num_layers=arguments.encoder_num_layers,
+                decoder_num_layers=arguments.decoder_num_layers,
+                transformer_num_layers=arguments.transformer_num_layers
             )
         else:
-            model = trainerSparseEdgeKoopman.load_from_checkpoint(arguments.ckpt)
+            model = trainerSparseEdgeKoopman.load_from_checkpoint(arguments.ckpt, map_location=torch.device('cpu'))
         trainer.fit(
             model,
             train_dataloaders=data_loader.train_dataloader(),
@@ -205,7 +269,7 @@ def cli_main():
         return predict(data_loader.val_dataloader(), best_model), arguments, model
     else:
         data_loader = data_loader.val_dataloader()
-        model = trainerSparseEdgeKoopman.load_from_checkpoint(arguments.ckpt)
+        model = trainerSparseEdgeKoopman.load_from_checkpoint(arguments.ckpt, map_location=torch.device('cpu'))
         torch.save(model.model, "megatrawl_model_bn.ckpt")
         return predict(data_loader, model), arguments, model
 
@@ -258,8 +322,8 @@ def write_output(output, n):
     res = res + res.transpose(-1, -2) - D
     scipy.io.savemat(
         "../loaders/fmri.mat", {"input": output["input"].detach().cpu().numpy(),
-                     "fmri_mat": res.permute(0, 2, 3, 1).detach().cpu().numpy(),
-                     "labels": output["labels"].detach().cpu().numpy()})
+                                "fmri_mat": res.permute(0, 2, 3, 1).detach().cpu().numpy(),
+                                "labels": output["labels"].detach().cpu().numpy()})
 
 
 if __name__ == '__main__':
