@@ -36,7 +36,8 @@ from tqdm import tqdm
 from collections import OrderedDict
 import re
 
-from dataloaders.MegaTrawl import MegaTrawlDataset
+from CONSTANTS import CONSTANTS
+from dataloaders.MegaTrawl import MegaTrawlDataset, HCPTaskfMRIDataset
 from models.varKNF import Koopman
 from trainers.train_utils import train_epoch_koopman, eval_epoch_koopman, get_lr
 
@@ -72,21 +73,41 @@ def main(rank, world_size, input_dim, input_length,
     torch.backends.cudnn.benchmark = False
 
     output_dim = input_dim
-    train_set = MegaTrawlDataset(
-        input_length=input_length,
-        output_length=train_output_length,
-        mode="train",
-        jumps=jumps)
-    valid_set = MegaTrawlDataset(
-        input_length=input_length,
-        output_length=train_output_length,
-        mode="valid",
-        jumps=jumps)
-    test_set = MegaTrawlDataset(
-        input_length=input_length,
-        output_length=test_output_length,
-        jumps=jumps,
-        mode="test")
+    if dataset_name == "megatrawl":
+        train_set = MegaTrawlDataset(
+            input_length=input_length,
+            output_length=train_output_length,
+            mode="train",
+            jumps=jumps)
+        valid_set = MegaTrawlDataset(
+            input_length=input_length,
+            output_length=train_output_length,
+            mode="valid",
+            jumps=jumps)
+        test_set = MegaTrawlDataset(
+            input_length=input_length,
+            output_length=test_output_length,
+            jumps=jumps,
+            mode="test")
+    else:
+        train_set = HCPTaskfMRIDataset(
+            input_length=input_length,
+            output_length=train_output_length,
+            mode="train",
+            jumps=jumps,
+            datapath=CONSTANTS.DATADIR)
+        valid_set = HCPTaskfMRIDataset(
+            input_length=input_length,
+            output_length=train_output_length,
+            mode="valid",
+            jumps=jumps,
+            datapath=CONSTANTS.DATADIR)
+        test_set = HCPTaskfMRIDataset(
+            input_length=input_length,
+            output_length=test_output_length,
+            jumps=jumps,
+            mode="test",
+            datapath=CONSTANTS.DATADIR)
 
     train_loader = data.DataLoader(
         train_set, batch_size=batch_size, shuffle=False
@@ -248,7 +269,7 @@ def run_ddp_training():
     import argparse
     parser = argparse.ArgumentParser()
     parser.add_argument("-m", "--max_epochs", nargs="?", type=int, default=100)
-    parser.add_argument("--lr", default=1e-5, type=float, help="learning rate")
+    parser.add_argument("--lr", default=1e-4, type=float, help="learning rate")
     parser.add_argument("--mode", choices=["train", "test"], default="train")
     parser.add_argument("--ckpt", type=str, help="Checkpoint file for prediction")
     parser.add_argument("--from_ckpt", dest='from_ckpt', default=False, action='store_true')
@@ -256,30 +277,31 @@ def run_ddp_training():
                         help="Name you experiment")
     parser.add_argument("--write_dir", type=str, default="log/varKNF")
     parser.add_argument("--batch_size", type=int, default=2)
-    parser.add_argument("--num_feats", type=int, default=50)
-    parser.add_argument("--input_dim", type=int, default=32)
-    parser.add_argument("--input_length", type=int, default=128)
+    parser.add_argument("--num_feats", type=int, default=268)
+    parser.add_argument("--input_dim", type=int, default=4)
+    parser.add_argument("--input_length", type=int, default=24)
     parser.add_argument("--save_every", type=int, default=10)
-    parser.add_argument("--latent_dim", type=int, default=48)
-    parser.add_argument("--n_real_modes", type=int, default=3)
-    parser.add_argument("--n_complex_modes", type=int, default=8)
-    parser.add_argument("--output_length", type=int, default=32)
-    parser.add_argument("--num_steps", type=int, default=32)
-    parser.add_argument("--min_epochs", type=int, default=30)
-    parser.add_argument("--hidden_dim", type=int, default=256)
-    parser.add_argument("--num_layers", type=int, default=4)
+    parser.add_argument("--latent_dim", type=int, default=12)
+    parser.add_argument("--n_real_modes", type=int, default=1)
+    parser.add_argument("--n_complex_modes", type=int, default=6)
+    parser.add_argument("--output_length", type=int, default=12)
+    parser.add_argument("--num_steps", type=int, default=12)
+    parser.add_argument("--min_epochs", type=int, default=10)
+    parser.add_argument("--hidden_dim", type=int, default=64)
+    parser.add_argument("--num_layers", type=int, default=2)
     parser.add_argument("--use_revin", action='store_true')
     parser.add_argument("--use_instancenorm", action='store_true')
     parser.add_argument("--add_global_operator", action='store_true')
     parser.add_argument("--add_control", action='store_true')
     parser.add_argument("--seed", type=int, default=901)
-    parser.add_argument("--jumps", type=int, default=128)
-    parser.add_argument("--num_poly", type=int, default=3)
-    parser.add_argument("--num_sins", type=int, default=5)
+    parser.add_argument("--jumps", type=int, default=36)
+    parser.add_argument("--num_poly", type=int, default=2)
+    parser.add_argument("--num_sins", type=int, default=3)
     parser.add_argument("--num_exp", type=int, default=2)
     parser.add_argument("--decay_rate", type=float, default=0.99)
     parser.add_argument("--dropout_rate", type=float, default=0.1)
     parser.add_argument("--stride", type=int, default=4)
+    parser.add_argument("--dataset", type=str, default="hcp_task")
     parser.set_defaults(
         use_revin=False,
         use_instancenorm=False,
@@ -300,7 +322,7 @@ def run_ddp_training():
            args.num_layers, args.use_revin, args.use_instancenorm,
            args.add_global_operator, args.add_control,
            args.batch_size, args.max_epochs, args.lr,
-           "megatrawl", args.seed, args.jumps,
+           args.dataset, args.seed, args.jumps,
            args.num_poly, args.num_sins, args.num_exp, args.decay_rate,
            args.hidden_dim, args.num_layers, args.output_length,
            args.num_feats, args.dropout_rate, args.min_epochs, args.mode, args.stride)

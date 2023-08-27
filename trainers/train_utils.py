@@ -59,7 +59,8 @@ def train_epoch_koopman(train_loader,
                       norm_inps], [enc_embeds,
                                    pred_embeds]) = model(inps, tgts)
     loss_recon = loss_fun(norm_recons, norm_inps)
-    loss_pred = loss_fun(norm_inp_preds, norm_inps[:, 1:])
+    loss_pred = loss_fun(norm_inp_preds, norm_inps[:, 1:].unfold(
+      1, norm_inp_preds.shape[-1], 1))
     loss_embedding = loss_fun(enc_embeds, pred_embeds)
     loss_forward_pred = loss_fun(norm_outs, norm_tgts)
     loss = loss_forward_pred + loss_recon + loss_pred + \
@@ -106,7 +107,8 @@ def eval_epoch_koopman(eval_loader, model, loss_fun, rank=0):
                                               pred_embeds] = model(inps, tgts)
 
     loss_recon = loss_fun(norm_recons, norm_inps)
-    loss_pred = loss_fun(norm_inp_preds, norm_inps[:, 1:])
+    loss_pred = loss_fun(norm_inp_preds, norm_inps[:, 1:].unfold(
+      1, norm_inp_preds.shape[-1], 1))
     loss_embedding = loss_fun(enc_embeds, pred_embeds)
     loss = loss_fun(norm_outs,
                     norm_tgts) + loss_recon + loss_pred + loss_embedding
@@ -119,4 +121,4 @@ def eval_epoch_koopman(eval_loader, model, loss_fun, rank=0):
   return np.sqrt(np.mean(eval_loss)), np.concatenate(
       all_preds, axis=0), np.concatenate(
           all_trues, axis=0), np.concatenate(
-            all_recon, axis=0), np.concatenate(all_recon_trues, axis=0)
+            all_recon, axis=0), np.concatenate(all_recon_trues, axis=0), loss_pred

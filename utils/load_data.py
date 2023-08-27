@@ -44,7 +44,7 @@ def write_data_in_numpy():
     labels = np.stack(labels, axis=0)
 
     import pickle
-    pickle.dump(data, open("../../data/data_array.p", "wb"))
+    pickle.dump(data, open("../../data/HCP_task.p", "wb"))
     pickle.dump(labels, open("../../data/label_array.p", "wb"))
 
 
