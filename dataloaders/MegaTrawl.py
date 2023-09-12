@@ -1,84 +1,157 @@
 import unittest
 from abc import ABC
 
-import pytorch_lightning as pl
 import os
 import numpy as np
 import torch
 from sklearn.model_selection import train_test_split
-import pickle
-from torch.utils.data import DataLoader, random_split, \
-    TensorDataset, Dataset, DistributedSampler
+from torch.utils.data import DataLoader
 
 from CONSTANTS import CONSTANTS
 
 
-class TaskFMRIDataModule(pl.LightningDataModule):
-    def __init__(self, batch_size: int = 2, val_size=0.2, test_size=0.2, seed=42, datapath=None):
-        super(TaskFMRIDataModule, self).__init__()
-        fmri_signal = pickle.load(open(os.path.join(datapath, "../data/HCP_task.p"), "rb"))
-        fmri_signal = (fmri_signal - fmri_signal.mean(axis=-1)[:, :, np.newaxis]) / fmri_signal.std(axis=-1)[:, :,
-                                                                                    np.newaxis]
-        dataset = TensorDataset(torch.from_numpy(fmri_signal))
-        length = [len(dataset) - int(len(dataset) * val_size) - int(len(dataset) * test_size),
-                  int(len(dataset) * val_size),
-                  int(len(dataset) * test_size)]
-        self.train, self.val, self.test = random_split(
-            dataset, length, generator=torch.Generator().manual_seed(seed))
-        self.batch_size = batch_size
+# class TaskFMRIDataModule(pl.LightningDataModule):
+#     def __init__(self, batch_size: int = 2, val_size=0.2, test_size=0.2, seed=42, datapath=None):
+#         super(TaskFMRIDataModule, self).__init__()
+#         fmri_signal = pickle.load(open(os.path.join(datapath, "../data/HCP_task.p"), "rb"))
+#         fmri_signal = (fmri_signal - fmri_signal.mean(axis=-1)[:, :, np.newaxis]) / fmri_signal.std(axis=-1)[:, :,
+#                                                                                     np.newaxis]
+#         dataset = TensorDataset(torch.from_numpy(fmri_signal))
+#         length = [len(dataset) - int(len(dataset) * val_size) - int(len(dataset) * test_size),
+#                   int(len(dataset) * val_size),
+#                   int(len(dataset) * test_size)]
+#         self.train, self.val, self.test = random_split(
+#             dataset, length, generator=torch.Generator().manual_seed(seed))
+#         self.batch_size = batch_size
+#
+#     def train_dataloader(self):
+#         return DataLoader(self.train, batch_size=self.batch_size)
+#
+#     def val_dataloader(self):
+#         return DataLoader(self.val, batch_size=self.batch_size)
+#
+#     def test_dataloader(self):
+#         return DataLoader(self.test, batch_size=self.batch_size)
+#
+#     def predict_dataloader(self):
+#         return DataLoader(self.test, batch_size=self.batch_size)
+#
+#
+# class MegaTrawlDataModule(pl.LightningDataModule):
+#     def __init__(self,
+#                  batch_size: int = 2,
+#                  val_size=0.2,
+#                  test_size=0.2,
+#                  seed=42,
+#                  parcel=50):
+#         super(MegaTrawlDataModule, self).__init__()
+#         subjectIDs = np.loadtxt(os.path.join(CONSTANTS.HOME, "subjectIDs.txt"))
+#         fmri_signal = np.zeros((len(subjectIDs), parcel, 1200), dtype=float)
+#         for i, s in enumerate(subjectIDs):
+#             fmri_signal[i] = np.loadtxt(
+#                 os.path.join(CONSTANTS.HOME,
+#                              "node_timeseries",
+#                              f"3T_HCP1200_MSMAll_d{parcel}_ts2",
+#                              f"{int(s)}.txt"))[:1200].T
+#         fmri_signal = (fmri_signal - fmri_signal.mean(axis=-1)[:, :, np.newaxis]) \
+#                       / fmri_signal.std(axis=-1)[:, :, np.newaxis]
+#         dataset = TensorDataset(torch.from_numpy(fmri_signal).float(), torch.LongTensor(subjectIDs))
+#         length = [len(dataset) - int(len(dataset) * val_size) - int(len(dataset) * test_size),
+#                   int(len(dataset) * val_size),
+#                   int(len(dataset) * test_size)]
+#         self.train, self.val, self.test = random_split(dataset, length,
+#                                                        generator=torch.Generator().manual_seed(seed))
+#         self.batch_size = batch_size
+#         self.dataset = dataset
+#
+#     def train_dataloader(self):
+#         return DataLoader(dataset=self.train, batch_size=self.batch_size, shuffle=False,
+#                           sampler=DistributedSampler(self.train))
+#
+#     def val_dataloader(self):
+#         return DataLoader(self.val, batch_size=1000)
+#
+#     def test_dataloader(self):
+#         return DataLoader(self.test, batch_size=self.batch_size)
+#
+#     def predict_dataloader(self):
+#         return DataLoader(self.dataset, batch_size=self.batch_size)
 
-    def train_dataloader(self):
-        return DataLoader(self.train, batch_size=self.batch_size)
 
-    def val_dataloader(self):
-        return DataLoader(self.val, batch_size=self.batch_size)
+class M4Dataset(torch.utils.data.Dataset):
+  """Dataset class for M4 dataset."""
 
-    def test_dataloader(self):
-        return DataLoader(self.test, batch_size=self.batch_size)
+  def __init__(
+      self,
+      input_length,  # num of input steps
+      output_length,  # forecasting horizon
+      freq,  # The frequency of time series
+      direc,  # path to numpy data files
+      direc_test=None,  # for testing mode, we also need to load test data.
+      mode="train",  # train, validation or test
+      jumps=1  # The number of skipped steps when generating sliced samples
+  ):
 
-    def predict_dataloader(self):
-        return DataLoader(self.test, batch_size=self.batch_size)
+    self.input_length = input_length
+    self.output_length = output_length
+    self.mode = mode
 
+    # Load training set
+    self.train_data = np.load(direc, allow_pickle=True)
+    self.data_lsts = self.train_data.item().get(freq)
 
-class MegaTrawlDataModule(pl.LightningDataModule):
-    def __init__(self,
-                 batch_size: int = 2,
-                 val_size=0.2,
-                 test_size=0.2,
-                 seed=42,
-                 parcel=50):
-        super(MegaTrawlDataModule, self).__init__()
-        subjectIDs = np.loadtxt(os.path.join(CONSTANTS.HOME, "subjectIDs.txt"))
-        fmri_signal = np.zeros((len(subjectIDs), parcel, 1200), dtype=float)
-        for i, s in enumerate(subjectIDs):
-            fmri_signal[i] = np.loadtxt(
-                os.path.join(CONSTANTS.HOME,
-                             "node_timeseries",
-                             f"3T_HCP1200_MSMAll_d{parcel}_ts2",
-                             f"{int(s)}.txt"))[:1200].T
-        fmri_signal = (fmri_signal - fmri_signal.mean(axis=-1)[:, :, np.newaxis]) \
-                      / fmri_signal.std(axis=-1)[:, :, np.newaxis]
-        dataset = TensorDataset(torch.from_numpy(fmri_signal).float(), torch.LongTensor(subjectIDs))
-        length = [len(dataset) - int(len(dataset) * val_size) - int(len(dataset) * test_size),
-                  int(len(dataset) * val_size),
-                  int(len(dataset) * test_size)]
-        self.train, self.val, self.test = random_split(dataset, length,
-                                                       generator=torch.Generator().manual_seed(seed))
-        self.batch_size = batch_size
-        self.dataset = dataset
+    # First do global standardization
+    self.ts_means, self.ts_stds = [], []
+    for i, item in enumerate(self.data_lsts):
+      if np.isnan(item).any():
+        print(f"Subject {i} has NaN values")
+      avg, std = np.mean(item), np.std(item)
+      self.ts_means.append(avg)
+      self.ts_stds.append(std)
+      self.data_lsts[i] = (self.data_lsts[i] - avg) / std
 
-    def train_dataloader(self):
-        return DataLoader(dataset=self.train, batch_size=self.batch_size, shuffle=False,
-                          sampler=DistributedSampler(self.train))
+    self.ts_means = np.array(self.ts_means)
+    self.ts_stds = np.array(self.ts_stds)
 
-    def val_dataloader(self):
-        return DataLoader(self.val, batch_size=1000)
+    if mode == "test":
+      self.test_lsts = np.load(direc_test, allow_pickle=True).item().get(freq)
+      for i, item in enumerate(self.test_lsts):
+        self.test_lsts[i] = (item - self.ts_means[i]) / self.ts_stds[i]
+      self.ts_indices = list(range(len(self.test_lsts)))
 
-    def test_dataloader(self):
-        return DataLoader(self.test, batch_size=self.batch_size)
+    elif mode == "train" or "valid":
+      # shuffle slices before split
+      np.random.seed(123)
+      self.ts_indices = []
+      for i, item in enumerate(self.data_lsts):
+        for j in range(0, len(item)-input_length-output_length, jumps):
+          self.ts_indices.append((i, j))
+      np.random.shuffle(self.ts_indices)
 
-    def predict_dataloader(self):
-        return DataLoader(self.dataset, batch_size=self.batch_size)
+      # 90%-10% train-validation split
+      train_valid_split = int(len(self.ts_indices) * 0.9)
+      if mode == "train":
+        self.ts_indices = self.ts_indices[:train_valid_split]
+      elif mode == "valid":
+        self.ts_indices = self.ts_indices[train_valid_split:]
+    else:
+      raise ValueError("Mode can only be one of train, valid, test")
+
+  def __len__(self):
+    return len(self.ts_indices)
+
+  def __getitem__(self, index):
+    if self.mode == "test":
+      x = self.data_lsts[index][-self.input_length:]
+      y = self.test_lsts[index]
+
+    else:
+      i, j = self.ts_indices[index]
+      x = self.data_lsts[i][j:j + self.input_length]
+      y = self.data_lsts[i][j + self.input_length:j + self.input_length +
+                            self.output_length]
+
+    return torch.from_numpy(x).float(), torch.from_numpy(y).float()
 
 
 class MegaTrawlDataset(torch.utils.data.Dataset):
@@ -107,6 +180,7 @@ class MegaTrawlDataset(torch.utils.data.Dataset):
             ids = train_subID
         else:
             ids = test_subID
+        print(f"Number of subjects: {len(ids)}")
         T = 2048
         fmri_signal = np.zeros((len(ids), T, parcel), dtype=float)
         for i, s in enumerate(ids):
@@ -118,7 +192,7 @@ class MegaTrawlDataset(torch.utils.data.Dataset):
             if np.isnan(fmri_signal[i]).any():
                 print(f"Subject {s} has NaN values")
         self.data_lsts = (fmri_signal - fmri_signal.mean(axis=1)[:, np.newaxis]) \
-                         / fmri_signal.std(axis=-1)[:, :, np.newaxis]
+                         / fmri_signal.std(axis=1)[:, np.newaxis]
 
         self.ts_indices = []
         for i, item in enumerate(self.data_lsts):
@@ -131,16 +205,23 @@ class MegaTrawlDataset(torch.utils.data.Dataset):
             np.random.seed(123)
             idx = np.arange(0, len(self.data_lsts))
             np.random.shuffle(idx)
+            print(f"shuffled subject indices: {idx}")
             train_valid_split = int(len(idx) * 0.9)
-            
+
             # np.random.shuffle(self.ts_indices)
 
             # 90%-10% train-validation split
-            train_valid_split = int(len(self.ts_indices) * 0.9)
+            # train_valid_split = int(len(self.ts_indices) * 0.9)
+            sample_per_sub = len(self.ts_indices) // len(idx)
+            ts_indices = []
             if mode == "train":
-                self.ts_indices = self.ts_indices[:train_valid_split]
+                for ind in idx[:train_valid_split]:
+                    ts_indices += self.ts_indices[ind * sample_per_sub: (ind + 1) * sample_per_sub]
+                self.ts_indices = ts_indices
             elif mode == "valid":
-                self.ts_indices = self.ts_indices[train_valid_split:]
+                for ind in idx[train_valid_split:]:
+                    ts_indices += self.ts_indices[ind * sample_per_sub: (ind + 1) * sample_per_sub]
+                self.ts_indices = ts_indices
         print(f"{mode}-data count: {len(self.ts_indices)}")
 
     def __len__(self):

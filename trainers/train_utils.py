@@ -47,17 +47,17 @@ def train_epoch_koopman(train_loader,
   train_loss_embedding = []
 
   for inps, tgts in train_loader:
+    if len(inps.shape) == 2:
+      inps = inps.unsqueeze(-1)
+      tgts = tgts.unsqueeze(-1)
     if rank >= 0:
-      if len(inps.shape) > 2:
-        inps = inps.to(rank)
-        tgts = tgts.to(rank)
-      else:
-        inps = inps.unsqueeze(-1).to(rank)
-        tgts = tgts.unsqueeze(-1).to(rank)
+      inps = inps.to(rank)
+      tgts = tgts.to(rank)
+
     (_, [norm_outs,
          norm_tgts], [norm_recons, norm_inp_preds,
                       norm_inps], [enc_embeds,
-                                   pred_embeds]) = model(inps, tgts)
+                                   pred_embeds], _) = model(inps, tgts)
     loss_recon = loss_fun(norm_recons, norm_inps)
     loss_pred = loss_fun(norm_inp_preds, norm_inps[:, 1:].unfold(
       1, norm_inp_preds.shape[-1], 1))
@@ -71,7 +71,7 @@ def train_epoch_koopman(train_loader,
     train_loss.append(loss.item())
     optimizer.zero_grad()
     loss.backward()
-    nn.utils.clip_grad_norm_(model.parameters(), max_norm=5.0, norm_type=2)
+    nn.utils.clip_grad_norm_(model.parameters(), max_norm=2.0, norm_type=2)
     optimizer.step()
   return np.sqrt(np.mean(train_loss)), np.sqrt(np.mean(train_loss_recon)), \
             np.sqrt(np.mean(train_loss_pred)), np.sqrt(np.mean(train_loss_embedding))
@@ -93,18 +93,19 @@ def eval_epoch_koopman(eval_loader, model, loss_fun, rank=0):
   all_trues = []
   all_recon = []
   all_recon_trues = []
+  all_dmd_modes = []
   for inps, tgts in eval_loader:
-    if len(inps.shape) > 2:
+    if len(inps.shape) == 2:
+      inps = inps.unsqueeze(-1)
+      tgts = tgts.unsqueeze(-1)
+    if rank >= 0:
       inps = inps.to(rank)
       tgts = tgts.to(rank)
-    else:
-      inps = inps.unsqueeze(-1).to(rank)
-      tgts = tgts.unsqueeze(-1).to(rank)
 
-    denorm_outs, [norm_outs,
+    (denorm_outs, [norm_outs,
                     norm_tgts], [norm_recons, norm_inp_preds,
                                  norm_inps], [enc_embeds,
-                                              pred_embeds] = model(inps, tgts)
+                                              pred_embeds], dmd_modes) = model(inps, tgts)
 
     loss_recon = loss_fun(norm_recons, norm_inps)
     loss_pred = loss_fun(norm_inp_preds, norm_inps[:, 1:].unfold(
@@ -118,7 +119,10 @@ def eval_epoch_koopman(eval_loader, model, loss_fun, rank=0):
     all_trues.append(tgts.cpu().data.numpy())
     all_recon.append(norm_recons.cpu().data.numpy())
     all_recon_trues.append(norm_inps.cpu().data.numpy())
+    all_dmd_modes.append(dmd_modes.cpu().data.numpy())
   return np.sqrt(np.mean(eval_loss)), np.concatenate(
       all_preds, axis=0), np.concatenate(
           all_trues, axis=0), np.concatenate(
-            all_recon, axis=0), np.concatenate(all_recon_trues, axis=0), loss_pred
+            all_recon, axis=0), np.concatenate(
+              all_recon_trues, axis=0), np.concatenate(
+                all_dmd_modes, axis=0), loss_pred

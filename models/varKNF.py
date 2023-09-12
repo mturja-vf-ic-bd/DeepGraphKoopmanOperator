@@ -350,7 +350,7 @@ class Koopman(nn.Module):
         #####################################################################
         return (reconstructions, inp_preds, forw_preds,
                 embedding[:, 1:].unfold(1, forward_iters, 1),
-                embed_preds.unfold(1, forward_iters, forward_iters), 0)
+                embed_preds.unfold(1, forward_iters, forward_iters), local_eig_func_aug)
 
     def forward(self, org_inps, tgts):
         # number of autoregressive step
@@ -367,6 +367,7 @@ class Koopman(nn.Module):
             norm_inp_preds = []
             enc_embeds = []
             pred_embeds = []
+            dmd_modes = []
 
             for i in range(auto_steps):
                 try:
@@ -384,12 +385,13 @@ class Koopman(nn.Module):
 
                 single_forward_output = self.single_forward(norm_inp)
                 (reconstructions, inp_preds, forw_preds, enc_embedding,
-                 pred_embedding, rank_regularizer) = single_forward_output
+                 pred_embedding, local_eig_func_aug) = single_forward_output
 
                 norm_recons.append(reconstructions)
                 norm_inp_preds.append(inp_preds)
                 enc_embeds.append(enc_embedding)
                 pred_embeds.append(pred_embedding)
+                dmd_modes.append(local_eig_func_aug)
 
                 forw_preds = forw_preds.reshape(forw_preds.shape[0], -1,
                                                 self.num_feats)[:, :self.num_steps]
@@ -414,11 +416,13 @@ class Koopman(nn.Module):
             norm_recons = torch.cat(norm_recons, dim=0)
             enc_embeds = torch.cat(enc_embeds, dim=0)
             pred_embeds = torch.cat(pred_embeds, dim=0)
+            dmd_modes = torch.cat(dmd_modes, dim=0)
 
             forward_output = [
                 denorm_outs[:, :norm_tgts.shape[1]],
                 [norm_outs[:, :norm_tgts.shape[1]], norm_tgts],
-                [norm_recons, norm_inp_preds, norm_inps], [enc_embeds, pred_embeds]
+                [norm_recons, norm_inp_preds, norm_inps], [enc_embeds, pred_embeds],
+                dmd_modes
             ]
 
             return forward_output
@@ -430,6 +434,7 @@ class Koopman(nn.Module):
             inputs_preds = []
             enc_embeds = []
             pred_embeds = []
+            dmd_modes = []
 
             for i in range(auto_steps):
                 try:
@@ -441,12 +446,13 @@ class Koopman(nn.Module):
                 true_inps.append(inps)
                 single_forward_output = self.single_forward(inps)
                 (reconstructions, inp_preds, forw_preds, enc_embedding,
-                 pred_embedding, rank_regularizer) = single_forward_output
+                 pred_embedding, local_eig_func_aug) = single_forward_output
 
                 recons.append(reconstructions)
                 inputs_preds.append(inp_preds)
                 enc_embeds.append(enc_embedding)
                 pred_embeds.append(pred_embedding)
+                dmd_modes.append(local_eig_func_aug)
 
                 forw_preds = forw_preds.reshape(forw_preds.shape[0], -1,
                                                 self.num_feats)[:, :self.num_steps]
@@ -460,10 +466,12 @@ class Koopman(nn.Module):
             recons = torch.cat(recons, dim=0)
             enc_embeds = torch.cat(enc_embeds, dim=0)
             pred_embeds = torch.cat(pred_embeds, dim=0)
+            dmd_modes = torch.cat(dmd_modes, dim=0)
 
             forward_output = [
                 outs[:, :tgts.shape[1]], [outs[:, :tgts.shape[1]], tgts],
-                [recons, inputs_preds, true_inps], [enc_embeds, pred_embeds]
+                [recons, inputs_preds, true_inps], [enc_embeds, pred_embeds],
+                dmd_modes
             ]
 
             return forward_output
@@ -491,3 +499,4 @@ class varKNFtest(unittest.TestCase):
         inp = torch.rand(size=(2, 256, 50))
         tgt = torch.rand(size=(2, 32, 50))
         output = model(inp, tgt)
+        print(output[-1].shape)

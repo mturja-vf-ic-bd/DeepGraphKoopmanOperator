@@ -37,7 +37,7 @@ from collections import OrderedDict
 import re
 
 from CONSTANTS import CONSTANTS
-from dataloaders.MegaTrawl import MegaTrawlDataset, HCPTaskfMRIDataset
+from dataloaders.MegaTrawl import MegaTrawlDataset, HCPTaskfMRIDataset, M4Dataset
 from models.varKNF import Koopman
 from trainers.train_utils import train_epoch_koopman, eval_epoch_koopman, get_lr
 
@@ -47,8 +47,6 @@ from torch import nn
 from torch.utils import data
 from torch.utils.data import DistributedSampler
 from torch.distributed import init_process_group, destroy_process_group
-from torch.nn.parallel import DistributedDataParallel as DDP
-import torch.multiprocessing as mp
 
 
 def main(rank, world_size, input_dim, input_length,
@@ -88,6 +86,32 @@ def main(rank, world_size, input_dim, input_length,
             input_length=input_length,
             output_length=test_output_length,
             jumps=jumps,
+            mode="test")
+    elif dataset_name == "M4":
+        data_dir = CONSTANTS.CODEDIR + "/data/M4"
+        direc = os.path.join(data_dir, "train.npy")
+        direc_test = os.path.join(data_dir, "test.npy")
+        freq = "Weekly"
+        train_set = M4Dataset(
+            input_length=input_length,
+            output_length=train_output_length,
+            freq=freq,
+            direc=direc,
+            mode="train",
+            jumps=jumps)
+        valid_set = M4Dataset(
+            input_length=input_length,
+            output_length=train_output_length,
+            freq=freq,
+            direc=direc,
+            mode="valid",
+            jumps=jumps)
+        test_set = M4Dataset(
+            input_length=input_length,
+            output_length=test_output_length,
+            freq=freq,
+            direc=direc,
+            direc_test=direc_test,
             mode="test")
     else:
         train_set = HCPTaskfMRIDataset(
@@ -277,7 +301,7 @@ def run_ddp_training():
                         help="Name you experiment")
     parser.add_argument("--write_dir", type=str, default="log/varKNF")
     parser.add_argument("--batch_size", type=int, default=2)
-    parser.add_argument("--num_feats", type=int, default=268)
+    parser.add_argument("--num_feats", type=int, default=1)
     parser.add_argument("--input_dim", type=int, default=4)
     parser.add_argument("--input_length", type=int, default=24)
     parser.add_argument("--save_every", type=int, default=10)
@@ -301,7 +325,7 @@ def run_ddp_training():
     parser.add_argument("--decay_rate", type=float, default=0.99)
     parser.add_argument("--dropout_rate", type=float, default=0.1)
     parser.add_argument("--stride", type=int, default=4)
-    parser.add_argument("--dataset", type=str, default="hcp_task")
+    parser.add_argument("--dataset", type=str, default="M4")
     parser.set_defaults(
         use_revin=False,
         use_instancenorm=False,

@@ -5,3 +5,4 @@ rsync -rv /Users/mturja/PycharmProjects/DeepGraphKoopmanOperator/models mturja@j
 rsync -rv /Users/mturja/PycharmProjects/DeepGraphKoopmanOperator/trainers mturja@janus.ia.unc.edu:/export_home/mturja/DeepGraphKoopmanOperator/
 rsync -rv /Users/mturja/PycharmProjects/DeepGraphKoopmanOperator/utils mturja@janus.ia.unc.edu:/export_home/mturja/DeepGraphKoopmanOperator/
 rsync -rv /Users/mturja/PycharmProjects/DeepGraphKoopmanOperator/CONSTANTS.py mturja@janus.ia.unc.edu:/export_home/mturja/DeepGraphKoopmanOperator/
+#rsync -rv /Users/mturja/PycharmProjects/DeepGraphKoopmanOperator/data/M4 mturja@janus.ia.unc.edu:/export_home/mturja/DeepGraphKoopmanOperator/data/

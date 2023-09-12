@@ -6,8 +6,9 @@ import torch
 from experiments.utils import parse_model_name
 from matplotlib import pyplot as plt
 import numpy as np
+from CONSTANTS import CONSTANTS
 
-base = f"/Users/mturja/PycharmProjects/DeepGraphKoopmanOperator/megatrawl_results"
+base = os.path.join(CONSTANTS.CODEDIR, "megatrawl_results")
 files = os.listdir(base)
 loss = {}
 loss_fn = torch.nn.MSELoss()
@@ -21,7 +22,7 @@ for f in files:
     input_length = params["input_length"]
     idx = 0
     print(f)
-    if params["input_dim"] == 16 and params["num_steps"] == 32 and params["lr"] == 0.0003:
+    if params["input_dim"] == 32 and params["num_steps"] == 32 and params["lr"] == 0.0003 and params["rm"] == 5:
         res = torch.load(base + "/" + f)
         sample_per_subject = math.ceil((T - params["input_length"] - params["num_steps"]) / params["jumps"])
         feat_dim = 50
@@ -46,12 +47,14 @@ for f in files:
             pred = preds[:, i]
             tgt = tgts[:, i]
             axs[i].set_title(f"Node:{i}", fontdict=sub_title_font)
-            axs[i].plot(pred, c="r", label="Prediction")
-            axs[i].plot(tgt, c="b", label="Ground Truth")
+            axs[i].plot(pred[-640:], c="r", label="Prediction")
+            axs[i].plot(tgt[-640:], c="b", label="Ground Truth")
             axs[i].legend(prop={'size': 18}, loc="upper right")
+            axs[i].set_xticks(np.arange(0, 700, 32))
 
         plt.suptitle(f"Window Length: {input_length}", fontsize=24)
-        plt.show()
+        plt.savefig(os.path.join(CONSTANTS.CODEDIR, "experiments", "plots",
+                                 f"ts_{params['input_dim']}_{params['input_length']}.png"))
         if params["input_length"] not in loss.keys():
             loss[params["input_length"]] = [((res["test_preds"] - res["test_tgts"])**2).mean()]
         else:
@@ -59,6 +62,8 @@ for f in files:
                 ((res["test_preds"] - res["test_tgts"])**2).mean())
 
         print(loss[params["input_length"]])
+
+plt.clf()
 
 x, y = [], []
 for k, v in loss.items():
@@ -68,7 +73,7 @@ for k, v in loss.items():
 
 y = sorted(y, key=lambda k: x[y.index(k)])
 x.sort()
-plt.ylim(0.6, 1.2)
+plt.ylim(0.7, 1.1)
 plt.xlabel(f"Step Size")
 plt.ylabel(f"Prediction Loss")
 plt.xticks(x, x)
@@ -78,7 +83,8 @@ plt.scatter(x, y)
 for i in range(len(x) - 1):
     plt.plot([x[i], x[i+1]], [y[i], y[i+1]], color="b")
 plt.tight_layout()
-plt.show()
+plt.savefig(os.path.join(CONSTANTS.CODEDIR, "experiments", "plots",
+                                 f"loss_progression.png"))
 
 print(loss)
 
