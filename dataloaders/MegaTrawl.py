@@ -379,12 +379,34 @@ def get_DMN_Attn_ind():
 class testMegaTrawlDataset(unittest.TestCase):
     def testMegaTrawlDatashape(self):
         dataset = MegaTrawlDataset(
-            input_length=128, output_length=32,
+            input_length=256, output_length=32,
             mode="train", jumps=128)
         dataloaders = DataLoader(dataset, batch_size=2, shuffle=True)
         src, tgt = next(iter(dataloaders))
-        self.assertEqual(src.shape, (2, 128, 50))
+        self.assertEqual(src.shape, (2, 256, 50))
         self.assertEqual(tgt.shape, (2, 32, 50))
+
+        correlation = []
+        w = 16
+        p = 28
+        q = 29
+        for i in range(w//2, 256-w//2 + 1, 1):
+            a = np.corrcoef(src[0, i-w//2:i+w//2, p], src[0, i-w//2:i+w//2, q])[0, 1]
+            correlation.append(a)
+        from matplotlib import pyplot as plt
+        plt.figure(figsize=(60, 20))
+        plt.subplot(2, 1, 1)
+        plt.xticks([])
+        plt.yticks([])
+
+        # plt.plot(src[0, w//2:-w//2, p], c='b', linewidth=10)
+        plt.plot(src[0, w//2:-w//2, q], c='r', linewidth=10)
+        plt.subplot(2, 1, 2)
+        plt.xticks([])
+        plt.yticks([])
+        plt.plot(correlation, linewidth=4)
+        plt.tight_layout()
+        plt.show()
 
 
 class testHCPTaskfMRIDataset(unittest.TestCase):

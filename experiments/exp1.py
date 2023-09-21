@@ -22,7 +22,9 @@ for f in files:
     input_length = params["input_length"]
     idx = 0
     print(f)
-    if params["input_dim"] == 32 and params["num_steps"] == 32 and params["lr"] == 0.0003 and params["rm"] == 5:
+    if params["input_dim"] == 16 and params["num_steps"] == 32 and params["lr"] == 0.0003 and params["rm"] == 5 and params["decay"] == 0.9:
+        if f.endswith("npy"):
+            continue
         res = torch.load(base + "/" + f)
         sample_per_subject = math.ceil((T - params["input_length"] - params["num_steps"]) / params["jumps"])
         feat_dim = 50

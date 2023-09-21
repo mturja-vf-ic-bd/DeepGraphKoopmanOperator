@@ -22,9 +22,6 @@ def compute_cosine_distance(mat):
     return np.mean(cosine_distance) * cosine_distance.shape[1] / (cosine_distance.shape[1] - 1)
 
 
-
-
-
 for f in files:
     if f.endswith("pth"):
         continue
@@ -33,7 +30,7 @@ for f in files:
     input_length = params["input_length"]
     idx = 0
     print(f)
-    if params["input_dim"] == 32 and params["num_steps"] == 32 and params["lr"] == 0.0003 and params["rm"] == 5:
+    if params["input_dim"] == 16 and params["num_steps"] == 32 and params["lr"] == 0.0003 and params["rm"] == 5 and params["decay"] == 0.9:
         if f.endswith("npy"):
             res = np.load(base + "/" + f)
 

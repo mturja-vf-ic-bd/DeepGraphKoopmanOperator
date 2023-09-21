@@ -298,15 +298,17 @@ class Koopman(nn.Module):
         for i in range(inps.shape[1] - forward_iters):
             forw = embedding[:, i:i + 1]
             for k in range(forward_iters):
-                forw_l = varying_multiply(
+                if self.add_global_operator:
+                    forw = self.global_linear_transform(forw)
+                forw = varying_multiply(
                     forw,
                     local_eig_func_aug,
                     local_eig_vals[:, i:i + 1],
                     1,
                     self.real_modes,
                     self.complex_modes // 2,
-                    k=k)
-                inp_embed_preds.append(forw_l)
+                    k=1)
+                inp_embed_preds.append(forw)
         embed_preds = torch.cat(inp_embed_preds, dim=1)
 
         # Reconstruction
@@ -317,32 +319,34 @@ class Koopman(nn.Module):
         ########## Generate Predictions on the Forecasting Window ##########
         # If the predictions on the lookback window deviates a lot from groud truth,
         # adjust the Koopman operator with the control module.
-        if self.add_control:
-            pred_diff = inp_preds.reshape(
-                inp_preds.shape[0], -1) - \
-                        inps[:, 1:].unfold(1, forward_iters,
-                                           forward_iters).reshape(
-                            inp_preds.shape[0], -1)
-            linear_adj = self.control(pred_diff)
-            linear_adj = torch.stack(
-                [torch.diagflat(linear_adj[i]) for i in range(len(linear_adj))])
+        # if self.add_control:
+        #     pred_diff = inp_preds.reshape(
+        #         inp_preds.shape[0], -1) - \
+        #                 inps[:, 1:].unfold(1, forward_iters,
+        #                                    forward_iters).reshape(
+        #                     inp_preds.shape[0], -1)
+            # linear_adj = self.control(pred_diff)
+            # linear_adj = torch.stack(
+            #     [torch.diagflat(linear_adj[i]) for i in range(len(linear_adj))])
 
         forw_preds = []
         forw = embedding[:, -1:]
         # Forward predictions
         for i in range(forward_iters):
-            forw_l = varying_multiply(
+            if self.add_global_operator:
+                forw = self.global_linear_transform(forw)
+            forw = varying_multiply(
                 forw,
                 local_eig_func_aug,
                 local_eig_vals[:, -1:],
                 1,
                 self.real_modes,
                 self.complex_modes // 2,
-                k=i + 1)
-            if self.add_control:
-                forw_l = forw_l + torch.einsum("bnl, blh -> bnh", forw_l,
-                                               linear_adj)
-            forw_preds.append(forw_l)
+                k=1)
+            # if self.add_control:
+            #     forw_l = forw_l + torch.einsum("bnl, blh -> bnh", forw_l,
+            #                                    linear_adj)
+            forw_preds.append(forw)
         forw_preds = torch.cat(forw_preds, dim=1)
 
         # Reconstruction
