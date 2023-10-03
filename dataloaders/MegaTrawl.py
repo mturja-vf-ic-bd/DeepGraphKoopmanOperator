@@ -3,6 +3,7 @@ from abc import ABC
 
 import os
 import numpy as np
+import pandas as pd
 import torch
 from sklearn.model_selection import train_test_split
 from torch.utils.data import DataLoader
@@ -170,6 +171,8 @@ class MegaTrawlDataset(torch.utils.data.Dataset):
 
         subjectIDs = np.loadtxt(
             os.path.join(CONSTANTS.HOME, "subjectIDs.txt"))
+        with open(os.path.join(CONSTANTS.HOME, "Behavioural_HCP_S1200.csv")) as f:
+            behav_vals = pd.read_csv(f)
         train_subID, test_subID = \
             train_test_split(
                 subjectIDs,
@@ -183,16 +186,36 @@ class MegaTrawlDataset(torch.utils.data.Dataset):
         print(f"Number of subjects: {len(ids)}")
         T = 2048
         fmri_signal = np.zeros((len(ids), T, parcel), dtype=float)
+        self.regressors = np.zeros((len(ids), 4))
+        count = 0
         for i, s in enumerate(ids):
-            fmri_signal[i] = np.loadtxt(
+            signal = np.loadtxt(
                 os.path.join(CONSTANTS.HOME,
                              "node_timeseries",
                              f"3T_HCP1200_MSMAll_d{parcel}_ts2",
                              f"{int(s)}.txt"))[:T]
-            if np.isnan(fmri_signal[i]).any():
-                print(f"Subject {s} has NaN values")
+            if np.isnan(signal).any():
+                print(f"Subject {s} has NaN values. Skipping")
+                continue
+
+            bm = behav_vals[behav_vals["Subject"] == int(s)][["CogFluidComp_AgeAdj","CogTotalComp_AgeAdj", "PMAT24_A_CR", "ReadEng_AgeAdj"]]
+            if len(bm) == 0:
+                print(f"{s} doesn't have behaviral measures. Skipping.")
+                continue
+            elif bm.isna().any().any():
+                print(f"{s} has NaN in behavioral measures. Skipping.")
+                continue
+            self.regressors[count] = bm.to_numpy()[0]
+            fmri_signal[count] = signal
+            count += 1
+
+        print(f"Total subjects: {count}")
+        fmri_signal = fmri_signal[0:count]
+        self.regressors = self.regressors[0:count]
         self.data_lsts = (fmri_signal - fmri_signal.mean(axis=1)[:, np.newaxis]) \
                          / fmri_signal.std(axis=1)[:, np.newaxis]
+        self.regressors = (self.regressors - self.regressors.mean(axis=0)[np.newaxis]) / \
+                          self.regressors.std(axis=0)[np.newaxis]
 
         self.ts_indices = []
         for i, item in enumerate(self.data_lsts):
@@ -232,7 +255,9 @@ class MegaTrawlDataset(torch.utils.data.Dataset):
         x = self.data_lsts[i][j:j + self.input_length]
         y = self.data_lsts[i][j + self.input_length:j + self.input_length +
                                                     self.output_length]
-        return torch.from_numpy(x).float(), torch.from_numpy(y).float()
+        reg = self.regressors[i]
+
+        return torch.from_numpy(x).float(), torch.from_numpy(y).float(), torch.from_numpy(reg).float()
 
 
 class HCPTaskfMRIDataset(torch.utils.data.Dataset):

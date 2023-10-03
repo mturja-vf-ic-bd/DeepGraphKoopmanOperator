@@ -211,6 +211,10 @@ class Koopman(nn.Module):
             use_instancenorm=self.use_instancenorm,
             dropout_rate=dropout_rate)
 
+        self.regressor = nn.Sequential(
+            nn.Dropout(0.5),
+            nn.Linear(2*self.len_interas, 4))
+
     def single_forward(
             self,
             inps,  # input ts tensor
@@ -279,6 +283,9 @@ class Koopman(nn.Module):
         local_eig_func = self.eigen_func(trans_out)
         local_eig_func = local_eig_func / torch.norm(
             local_eig_func, dim=1, keepdim=True, p=2)
+        local_eig_func_real = torch.cat([local_eig_func[:, -self.len_interas:, 0],
+                                         local_eig_func[:, -self.len_interas:, self.real_modes]],
+                                        dim=-1)
         local_eig_func_complex = torch.stack(
             [local_eig_func[:, :, -self.complex_modes // 2:],
              local_eig_func[:, :, -self.complex_modes // 2:]],
@@ -351,10 +358,13 @@ class Koopman(nn.Module):
 
         # Reconstruction
         forw_preds = self.decoder(forw_preds)
+
+        # Regression task
+        y_pred = self.regressor(local_eig_func_real)
         #####################################################################
         return (reconstructions, inp_preds, forw_preds,
                 embedding[:, 1:].unfold(1, forward_iters, 1),
-                embed_preds.unfold(1, forward_iters, forward_iters), local_eig_func_aug)
+                embed_preds.unfold(1, forward_iters, forward_iters), local_eig_func_aug, y_pred)
 
     def forward(self, org_inps, tgts):
         # number of autoregressive step
@@ -389,7 +399,7 @@ class Koopman(nn.Module):
 
                 single_forward_output = self.single_forward(norm_inp)
                 (reconstructions, inp_preds, forw_preds, enc_embedding,
-                 pred_embedding, local_eig_func_aug) = single_forward_output
+                 pred_embedding, local_eig_func_aug, y_pred) = single_forward_output
 
                 norm_recons.append(reconstructions)
                 norm_inp_preds.append(inp_preds)
@@ -426,7 +436,7 @@ class Koopman(nn.Module):
                 denorm_outs[:, :norm_tgts.shape[1]],
                 [norm_outs[:, :norm_tgts.shape[1]], norm_tgts],
                 [norm_recons, norm_inp_preds, norm_inps], [enc_embeds, pred_embeds],
-                dmd_modes
+                dmd_modes, y_pred
             ]
 
             return forward_output
@@ -450,7 +460,7 @@ class Koopman(nn.Module):
                 true_inps.append(inps)
                 single_forward_output = self.single_forward(inps)
                 (reconstructions, inp_preds, forw_preds, enc_embedding,
-                 pred_embedding, local_eig_func_aug) = single_forward_output
+                 pred_embedding, local_eig_func_aug, y_pred) = single_forward_output
 
                 recons.append(reconstructions)
                 inputs_preds.append(inp_preds)
@@ -475,7 +485,7 @@ class Koopman(nn.Module):
             forward_output = [
                 outs[:, :tgts.shape[1]], [outs[:, :tgts.shape[1]], tgts],
                 [recons, inputs_preds, true_inps], [enc_embeds, pred_embeds],
-                dmd_modes
+                dmd_modes, y_pred
             ]
 
             return forward_output
