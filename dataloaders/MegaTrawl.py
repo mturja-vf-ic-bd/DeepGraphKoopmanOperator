@@ -162,12 +162,18 @@ class MegaTrawlDataset(torch.utils.data.Dataset):
             output_length,  # forecasting horizon
             mode="train",  # train, validation or test
             jumps=1,  # The number of skipped steps when generating samples
-            parcel=50
+            parcel=50,
+            sample_per_subject=3
     ):
 
         self.input_length = input_length
         self.output_length = output_length
         self.mode = mode
+        self.sample_per_subject = sample_per_subject
+
+        # required for segment_generator
+        self.subject_index = 0
+        self.cur_sample = 0
 
         subjectIDs = np.loadtxt(
             os.path.join(CONSTANTS.HOME, "subjectIDs.txt"))
@@ -183,8 +189,10 @@ class MegaTrawlDataset(torch.utils.data.Dataset):
             ids = train_subID
         else:
             ids = test_subID
+        self.ids = ids
         print(f"Number of subjects: {len(ids)}")
         T = 2048
+        self.total_length = T
         fmri_signal = np.zeros((len(ids), T, parcel), dtype=float)
         self.regressors = np.zeros((len(ids), 4))
         count = 0
@@ -211,6 +219,8 @@ class MegaTrawlDataset(torch.utils.data.Dataset):
 
         print(f"Total subjects: {count}")
         fmri_signal = fmri_signal[0:count]
+        self.total_subject = count
+        self.mode = mode
         self.regressors = self.regressors[0:count]
         self.data_lsts = (fmri_signal - fmri_signal.mean(axis=1)[:, np.newaxis]) \
                          / fmri_signal.std(axis=1)[:, np.newaxis]
@@ -227,8 +237,7 @@ class MegaTrawlDataset(torch.utils.data.Dataset):
         if mode == "train" or "valid":
             np.random.seed(123)
             idx = np.arange(0, len(self.data_lsts))
-            np.random.shuffle(idx)
-            print(f"shuffled subject indices: {idx}")
+            # np.random.shuffle(idx)
             train_valid_split = int(len(idx) * 0.9)
 
             # np.random.shuffle(self.ts_indices)
@@ -247,11 +256,36 @@ class MegaTrawlDataset(torch.utils.data.Dataset):
                 self.ts_indices = ts_indices
         print(f"{mode}-data count: {len(self.ts_indices)}")
 
+    def segment_generator(self):
+        # Initialize counters
+        while True:
+            i = self.subject_index
+            j = np.random.randint(0, self.total_length - self.input_length - self.output_length)
+            self.cur_sample += 1
+            # print(f"{i},{j}")
+
+            # If we've accumulated the specified number of segments for this subject in the current epoch, move to the next subject and reset the epoch_index
+            if self.cur_sample >= self.sample_per_subject:
+                self.subject_index += 1
+                self.cur_sample = 0
+
+                # If we've reached the end of the subjects, wrap around to the first subject
+                if self.subject_index >= self.total_subject:
+                    self.subject_index = 0
+
+            yield i, j
+
     def __len__(self):
-        return len(self.ts_indices)
+        if self.mode == "test":
+            return len(self.ts_indices)
+        else:
+            return self.total_subject * self.sample_per_subject
 
     def __getitem__(self, index):
-        i, j = self.ts_indices[index]
+        if self.mode == "test":
+            i, j = self.ts_indices[index]
+        else:
+            i, j = next(self.segment_generator())
         x = self.data_lsts[i][j:j + self.input_length]
         y = self.data_lsts[i][j + self.input_length:j + self.input_length +
                                                     self.output_length]
@@ -406,10 +440,10 @@ class testMegaTrawlDataset(unittest.TestCase):
         dataset = MegaTrawlDataset(
             input_length=256, output_length=32,
             mode="train", jumps=128)
-        dataloaders = DataLoader(dataset, batch_size=2, shuffle=True)
-        src, tgt = next(iter(dataloaders))
-        self.assertEqual(src.shape, (2, 256, 50))
-        self.assertEqual(tgt.shape, (2, 32, 50))
+        dataloaders = DataLoader(dataset, batch_size=9, shuffle=False)
+        for src, tgt, _ in iter(dataloaders):
+            self.assertEqual(src.shape, (9, 256, 50))
+            self.assertEqual(tgt.shape, (9, 32, 50))
 
         correlation = []
         w = 16
@@ -445,6 +479,7 @@ class testHCPTaskfMRIDataset(unittest.TestCase):
             datapath=datapath
         )
         dataloaders = DataLoader(dataset, batch_size=2, shuffle=True)
+
         src, tgt = next(iter(dataloaders))
         self.assertEqual(src.shape, (2, 24, 268))
         self.assertEqual(tgt.shape, (2, 12, 268))

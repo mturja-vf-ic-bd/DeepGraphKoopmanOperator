@@ -16,3 +16,4 @@ log/*
 *pt
 *pth
 !/experiments/exp1.py
+pred/

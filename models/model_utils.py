@@ -22,11 +22,12 @@ def form_complex_conjugate_block(omegas, delta_t, k=1):
     Side effects:
         None
     """
-    scale = 1 - nn.ReLU()(-(torch.exp(omegas[:, :, 1] * delta_t * k) - 1))
+    scale = 1 - nn.ReLU()(1 - omegas[:, :, 1])
     scale = nn.ReLU()(scale)
-    # scale = torch.exp(omegas[:, :, 1] * delta_t * k)
     entry11 = torch.mul(scale, torch.cos(omegas[:, :, 0] * delta_t * k))
     entry12 = torch.mul(scale, torch.sin(omegas[:, :, 0] * delta_t * k))
+    # entry11 = torch.cos(omegas[:, :, 0] * delta_t * k)
+    # entry12 = torch.sin(omegas[:, :, 0] * delta_t * k)
     row1 = torch.stack([entry11, -entry12], dim=-1)  # [None, None, 2]
     row2 = torch.stack([entry12, entry11], dim=-1)  # [None, None, 2]
     return torch.stack([row1, row2], dim=-2)  # [None, None, 2, 2] put one row below other
@@ -67,9 +68,10 @@ def varying_multiply(y, U, omegas, delta_t, num_real, num_complex_pairs, k=1):
     # faster to not explicitly create stack of diagonal matrices L
     real_list = []
     for j in range(num_real):
-        real_list.append(
-            torch.mul(y[:, :, j],
-                      torch.exp(omegas[:, :, j] * delta_t * k)))
+        # real_list.append(
+        #     torch.mul(y[:, :, j],
+        #               torch.exp(omegas[:, :, j] * delta_t * k)))
+        real_list.append(y[:, :, j])
 
     if len(real_list):
         real_part = torch.stack(real_list, dim=-1)
