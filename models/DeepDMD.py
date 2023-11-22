@@ -34,6 +34,7 @@ import math
 import unittest
 
 from layers.normalizer import RevIN
+from layers.positional_encoder import PositionalEncoding3D
 import numpy as np
 import torch
 from torch import nn
@@ -45,7 +46,7 @@ from models.model_utils import varying_multiply
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
-class Koopman(nn.Module):
+class DeepDMD(nn.Module):
     """Koopman Neural Forecaster.
 
     Attributes:
@@ -88,25 +89,17 @@ class Koopman(nn.Module):
                  encoder_num_layers,
                  decoder_num_layers,
                  latent_dim,
+                 rank,
                  num_feats=1,
-                 add_global_operator=False,
-                 add_dmd_operator=True,
-                 add_local_operator=False,
-                 add_control=False,
-                 control_num_layers=None,
-                 control_hidden_dim=None,
                  use_revin=True,
                  use_instancenorm=False,
-                 real_modes=1,
-                 complex_modes=3,
+                 add_global_operator=False,
                  num_sins=-1,
                  num_poly=-1,
                  num_exp=-1,
                  num_heads=1,
                  transformer_dim=128,
-                 transformer_num_layers=3,
-                 omega_dim=128,
-                 omega_num_layers=3,
+                 transformer_num_layers=2,
                  dropout_rate=0,
                  stride=1):
 
@@ -117,18 +110,11 @@ class Koopman(nn.Module):
         self.num_steps = num_steps
         self.latent_dim = latent_dim
         self.use_revin = use_revin
-        self.real_modes = real_modes
-        self.complex_modes = complex_modes
         self.use_instancenorm = use_instancenorm
-        self.add_control = add_control
-        self.add_global_operator = add_global_operator
-        self.add_dmd_operator = add_dmd_operator
-        self.add_local_operator = add_local_operator
         self.num_feats = num_feats
         self.stride = stride
-
-        assert complex_modes % 2 == 0, \
-            "Number of complex modes should be even"
+        self.rank = rank
+        self.add_global_operator = add_global_operator
 
         # num_poly/num_sins/num_exp = -1 means using default values
         if num_poly == -1:
@@ -167,58 +153,28 @@ class Koopman(nn.Module):
             use_instancenorm=self.use_instancenorm,
             dropout_rate=dropout_rate)
 
-        ### Global Linear Koopman Operator: A finite matrix ###
+        w = math.ceil((input_length - input_dim + 1) / self.stride)
+        ### Transformer for Koopman Operator
+        self.projU = nn.Linear(latent_dim * self.num_feats + self.len_interas, self.rank, bias=False)
+        self.projV = nn.Linear(self.rank, latent_dim * self.num_feats + self.len_interas, bias=False)
+        nn.init.orthogonal_(self.projU.weight)
+        nn.init.orthogonal_(self.projV.weight)
+
+        ### Global projection
         if self.add_global_operator:
-            self.global_linear_transform = nn.Linear(
-                latent_dim * self.num_feats + self.len_interas,
-                latent_dim * self.num_feats + self.len_interas,
-                bias=False)
+            self.global_transform = nn.Parameter(torch.rand(
+                latent_dim * self.num_feats + self.len_interas, latent_dim * self.num_feats + self.len_interas))
 
-        ### Transformer Encoder: learning Local Koopman Eigen-functions
-        w = math.ceil((input_length - input_dim + 1) / stride)
-        if self.add_dmd_operator:
-            self.encoder_layer_dmd = nn.TransformerEncoderLayer(
-                d_model=w,
-                nhead=num_heads,
-                dim_feedforward=transformer_dim)
-            self.transformer_encoder_dmd = nn.TransformerEncoder(
-                self.encoder_layer_dmd, num_layers=transformer_num_layers)
-            self.eigen_func = nn.Linear(
-                w, real_modes + complex_modes // 2)
-
-            ### Omega-net: Learning time-specific frequency
-            self.omega_net = MLP(
-                input_dim=latent_dim * num_feats + self.len_interas,
-                output_dim=real_modes + complex_modes,
-                hidden_dim=omega_dim,
-                num_layers=omega_num_layers,
-                use_instancenorm=use_instancenorm,
-                dropout_rate=dropout_rate)
-
-        ### Transformer for local operator
-        if self.add_local_operator:
-            self.encoder_layer_local = nn.TransformerEncoderLayer(
-                d_model=w,
-                nhead=num_heads,
-                dim_feedforward=transformer_dim)
-            self.transformer_encoder_local = nn.TransformerEncoder(
-                self.encoder_layer_local, num_layers=transformer_num_layers)
-            self.attention = nn.MultiheadAttention(
-                embed_dim=w,
-                num_heads=num_heads,
-                batch_first=True)
-
-        ### MLP Control/Feedback Module
-        if self.add_control:
-            # learn the adjustment to the koopman operator
-            # based on the prediction error on the look back window.
-            self.control = MLP(
-                input_dim=(w - 1) * self.num_feats * self.input_dim,
-                output_dim=latent_dim * self.num_feats + self.len_interas,
-                hidden_dim=control_hidden_dim,
-                num_layers=control_num_layers,
-                use_instancenorm=self.use_instancenorm,
-                dropout_rate=dropout_rate)
+        self.encoder_layer_local = nn.TransformerEncoderLayer(
+            d_model=w,
+            nhead=num_heads,
+            dim_feedforward=transformer_dim)
+        self.transformer_encoder_local = nn.TransformerEncoder(
+            self.encoder_layer_local, num_layers=transformer_num_layers)
+        self.attention = nn.MultiheadAttention(
+            embed_dim=w,
+            num_heads=num_heads,
+            batch_first=True)
 
         ### MLP Decoder: Reconstruct Observations from Measuremnets ###
         self.decoder = MLP(
@@ -228,12 +184,6 @@ class Koopman(nn.Module):
             num_layers=decoder_num_layers,
             use_instancenorm=self.use_instancenorm,
             dropout_rate=dropout_rate)
-
-        # self.regressor = nn.Sequential(
-        #     nn.Dropout(0.5),
-        #     nn.Linear(real_modes + complex_modes, 128),
-        #     nn.ReLU(),
-        #     nn.Linear(128, 4))
 
     def single_forward(
             self,
@@ -298,28 +248,10 @@ class Koopman(nn.Module):
         # Reconstruction
         reconstructions = self.decoder(embedding)
 
-        # Koopman Eigenfunctions and Eigenvals
-        local_eig_func_aug = None
-        local_eig_vals = None
-
-        if self.add_dmd_operator:
-            trans_out = self.transformer_encoder_dmd(embedding.transpose(1, 2))
-            local_eig_func = self.eigen_func(trans_out)
-            local_eig_func = local_eig_func / torch.norm(
-                local_eig_func, dim=1, keepdim=True, p=2)
-            local_eig_func_complex = torch.stack(
-                [local_eig_func[:, :, -self.complex_modes // 2:],
-                 local_eig_func[:, :, -self.complex_modes // 2:]],
-                dim=-1).flatten(start_dim=2)
-            local_eig_func_aug = torch.cat(
-                [local_eig_func[:, :, 0:self.real_modes], local_eig_func_complex],
-                dim=-1)
-            local_eig_vals = self.omega_net(embedding)
-
-        # Local Operator
-        if self.add_local_operator:
-            trans_out = self.transformer_encoder_local(embedding.transpose(1, 2))
-            local_transform = self.attention(trans_out, trans_out, trans_out)[1]
+        embedding_lowrank = self.projU(embedding)
+        # embedding_recon = self.projV(embedding_lowrank)
+        trans_out = self.transformer_encoder_local(embedding_lowrank.transpose(1, 2))
+        local_transform = self.attention(trans_out, trans_out, trans_out)[1]
 
         # Collect predicted measurements on the lookback window
         inp_embed_preds = []
@@ -329,87 +261,43 @@ class Koopman(nn.Module):
             forward_iters += 1
 
         for i in range(inps.shape[1] - forward_iters):
-            forw = embedding[:, i:i + 1]
+            forw = embedding_lowrank[:, i:i + 1]
             for k in range(forward_iters):
                 if self.add_global_operator:
-                    forw_global = self.global_linear_transform(forw)
+                    forw_g = torch.einsum("bnl, lh -> bnh", embedding[:, i:i + 1],
+                                          self.global_transform)
                 else:
-                    forw_global = 0
-                if self.add_dmd_operator:
-                    forw_dmd = varying_multiply(
-                        forw,
-                        local_eig_func_aug,
-                        local_eig_vals[:, i:i + 1],
-                        1,
-                        self.real_modes,
-                        self.complex_modes // 2,
-                        k=1)
-                else:
-                    forw_dmd = 0
-                if self.add_local_operator:
-                    forw_local = torch.einsum("bnl, blh -> bnh", forw,
-                                        local_transform)
-                else:
-                    forw_local = 0
-                forw = forw_global + forw_dmd + forw_local
-                inp_embed_preds.append(forw)
+                    forw_g = 0
+                forw = torch.einsum("bnl, blh -> bnh", forw,
+                                          local_transform)
+                inp_embed_preds.append(self.projV(forw) + forw_g)
         embed_preds = torch.cat(inp_embed_preds, dim=1)
 
         # Reconstruction
         inp_preds = self.decoder(embed_preds).unfold(
             1, forward_iters, forward_iters)
-        #########################################################
-
-        ########## Generate Predictions on the Forecasting Window ##########
-        # If the predictions on the lookback window deviates a lot from groud truth,
-        # adjust the Koopman operator with the control module.
-        # if self.add_control:
-        #     pred_diff = inp_preds.reshape(
-        #         inp_preds.shape[0], -1) - \
-        #                 inps[:, 1:].unfold(1, forward_iters,
-        #                                    forward_iters).reshape(
-        #                     inp_preds.shape[0], -1)
-            # linear_adj = self.control(pred_diff)
-            # linear_adj = torch.stack(
-            #     [torch.diagflat(linear_adj[i]) for i in range(len(linear_adj))])
 
         forw_preds = []
-        forw = embedding[:, -1:]
+        forw = embedding_lowrank[:, -1:]
         # Forward predictions
         for i in range(forward_iters):
             if self.add_global_operator:
-                forw_global = self.global_linear_transform(forw)
+                forw_g = torch.einsum("bnl, lh -> bnh", embedding[:, -1:],
+                                          self.global_transform)
             else:
-                forw_global = 0
-            if self.add_dmd_operator:
-                forw_dmd = varying_multiply(
-                    forw,
-                    local_eig_func_aug,
-                    local_eig_vals[:, i:i + 1],
-                    1,
-                    self.real_modes,
-                    self.complex_modes // 2,
-                    k=1)
-            else:
-                forw_dmd = 0
-            if self.add_local_operator:
-                forw_local = torch.einsum("bnl, blh -> bnh", forw,
-                                          local_transform)
-            else:
-                forw_local = 0
-            forw = forw_global + forw_dmd + forw_local
-            forw_preds.append(forw)
+                forw_g = 0
+            forw = torch.einsum("bnl, blh -> bnh", forw,
+                                      local_transform)
+            forw_preds.append(self.projV(forw) + forw_g)
         forw_preds = torch.cat(forw_preds, dim=1)
 
         # Reconstruction
         forw_preds = self.decoder(forw_preds)
 
-        # Regression task
-        # y_pred = self.regressor(local_eig_vals.mean(dim=1))
         #####################################################################
         return (reconstructions, inp_preds, forw_preds,
                 embedding[:, 1:].unfold(1, forward_iters, 1),
-                embed_preds.unfold(1, forward_iters, forward_iters), local_eig_func_aug, local_eig_vals)
+                embed_preds.unfold(1, forward_iters, forward_iters))
 
     def forward(self, org_inps, tgts):
         # number of autoregressive step
@@ -432,10 +320,6 @@ class Koopman(nn.Module):
             for i in range(auto_steps):
                 try:
                     inps = org_inps.unfold(1, self.input_dim, self.stride).flatten(start_dim=2)
-                    # inps = org_inps.reshape(org_inps.shape[0], -1, self.input_dim,
-                    #                         self.num_feats)
-                    # inps = inps.reshape(org_inps.shape[0], -1,
-                    #                     self.input_dim * self.num_feats)
                 except ValueError as valueerror:
                     raise ValueError(
                         "Input length is not divisible by input dim") from valueerror
@@ -445,14 +329,12 @@ class Koopman(nn.Module):
 
                 single_forward_output = self.single_forward(norm_inp)
                 (reconstructions, inp_preds, forw_preds, enc_embedding,
-                 pred_embedding, local_eig_func_aug, local_eig_vals) = single_forward_output
+                 pred_embedding) = single_forward_output
 
                 norm_recons.append(reconstructions)
                 norm_inp_preds.append(inp_preds)
                 enc_embeds.append(enc_embedding)
                 pred_embeds.append(pred_embedding)
-                dmd_modes.append(local_eig_func_aug)
-                dmd_freq.append(local_eig_vals)
 
                 forw_preds = forw_preds.reshape(forw_preds.shape[0], -1,
                                                 self.num_feats)[:, :self.num_steps]
@@ -477,18 +359,12 @@ class Koopman(nn.Module):
             norm_recons = torch.cat(norm_recons, dim=0)
             enc_embeds = torch.cat(enc_embeds, dim=0)
             pred_embeds = torch.cat(pred_embeds, dim=0)
-            if self.add_dmd_operator:
-                dmd_modes = torch.cat(dmd_modes, dim=0)
-                dmd_freq = torch.cat(dmd_freq, dim=0)
-            else:
-                dmd_modes = None
-                dmd_freq = None
 
             forward_output = [
                 denorm_outs[:, :norm_tgts.shape[1]],
                 [norm_outs[:, :norm_tgts.shape[1]], norm_tgts],
                 [norm_recons, norm_inp_preds, norm_inps], [enc_embeds, pred_embeds],
-                dmd_modes, dmd_freq
+                None, None
             ]
 
             return forward_output
@@ -513,14 +389,12 @@ class Koopman(nn.Module):
                 true_inps.append(inps)
                 single_forward_output = self.single_forward(inps)
                 (reconstructions, inp_preds, forw_preds, enc_embedding,
-                 pred_embedding, local_eig_func_aug, local_eig_vals) = single_forward_output
+                 pred_embedding) = single_forward_output
 
                 recons.append(reconstructions)
                 inputs_preds.append(inp_preds)
                 enc_embeds.append(enc_embedding)
                 pred_embeds.append(pred_embedding)
-                dmd_modes.append(local_eig_func_aug)
-                dmd_freq.append(local_eig_vals)
 
                 forw_preds = forw_preds.reshape(forw_preds.shape[0], -1,
                                                 self.num_feats)[:, :self.num_steps]
@@ -534,43 +408,35 @@ class Koopman(nn.Module):
             recons = torch.cat(recons, dim=0)
             enc_embeds = torch.cat(enc_embeds, dim=0)
             pred_embeds = torch.cat(pred_embeds, dim=0)
-            dmd_modes = torch.cat(dmd_modes, dim=0)
-            dmd_freq = torch.cat(dmd_freq, dim=0)
 
             forward_output = [
                 outs[:, :tgts.shape[1]], [outs[:, :tgts.shape[1]], tgts],
                 [recons, inputs_preds, true_inps], [enc_embeds, pred_embeds],
-                dmd_modes, dmd_freq
+                None, None
             ]
 
             return forward_output
 
 
-class varKNFtest(unittest.TestCase):
+class DeepDMDtest(unittest.TestCase):
     def test_model_output(self):
-        model = Koopman(
+        model = DeepDMD(
             input_dim=8,
+            stride=4,
             input_length=128,
-            output_dim=8,
+            output_dim=32,
             num_steps=32,
-            encoder_hidden_dim=128,
+            encoder_hidden_dim=256,
             encoder_num_layers=3,
             decoder_num_layers=3,
             decoder_hidden_dim=256,
             latent_dim=32,
             num_feats=50,
-            real_modes=3,
-            complex_modes=8,
+            rank=8,
             num_sins=3,
             num_poly=2,
-            num_exp=2,
-            stride=1,
-            add_dmd_operator=True,
-            add_local_operator=True
+            num_exp=2
         )
         inp = torch.rand(size=(9, 128, 50))
         tgt = torch.rand(size=(9, 32, 50))
         output = model(inp, tgt)
-        print(f"inputs_pred shape: {output[2][1].shape}")
-        print(f"true_inps shape: {output[2][2].unfold(1, output[2][1].shape[-1], 1).shape}")
-        print(output[-1].shape)

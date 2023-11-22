@@ -84,3 +84,4 @@ def varying_multiply(y, U, omegas, delta_t, num_real, num_complex_pairs, k=1):
         y_next = real_part
     y_next = torch.einsum('bij,bfj->bfi', U, y_next)
     return y_next
+

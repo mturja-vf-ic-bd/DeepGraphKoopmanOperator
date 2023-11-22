@@ -1,4 +1,10 @@
 # created by virtualenv automatically
+.DS_Store
+*.toml
+**/*.sh
+**/*.png
+**/*.txt
+**/*.npy
 data/*
 bin
 lib

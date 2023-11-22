@@ -8,7 +8,7 @@ from matplotlib import pyplot as plt
 import numpy as np
 from CONSTANTS import CONSTANTS
 
-base = os.path.join(CONSTANTS.CODEDIR, "megatrawl_results")
+base = os.path.join(CONSTANTS.CODEDIR, "pred")
 files = os.listdir(base)
 loss = {}
 loss_fn = torch.nn.MSELoss()
@@ -18,11 +18,13 @@ for f in files:
     if f.endswith("pth"):
         continue
     params = parse_model_name(f)
+    if params is None:
+        continue
     input_dim = params["input_dim"]
     input_length = params["input_length"]
     idx = 0
     print(f)
-    if params["input_dim"] == 16 and params["num_steps"] == 32 and params["lr"] == 0.0003 and params["rm"] == 5 and params["decay"] == 0.9:
+    if params["input_dim"] == 8 and params["num_steps"] == 32 and params["seed"] == 34:
         if f.endswith("npy"):
             continue
         res = torch.load(base + "/" + f)

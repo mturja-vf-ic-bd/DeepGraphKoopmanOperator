@@ -18,4 +18,4 @@ class CONSTANTS:
         HOME = f"/home/mturja/HCP_PTN1200"
         CODEDIR = os.path.join("/home/mturja", "DeepGraphKoopmanOperator")
         GraphDMDDIR = os.path.join("/home/mturja", "GraphDMD")
-        DATADIR = f"/home/mturja/"
+        DATADIR = f"/work/mturja/"

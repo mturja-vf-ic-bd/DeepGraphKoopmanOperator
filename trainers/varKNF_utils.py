@@ -25,18 +25,6 @@ def get_lr(optimizer):
         return param_group["lr"]
 
 
-def compute_reproducibility_loss(dmd_modes, sample_per_subject):
-    dmd_modes = dmd_modes.view(-1, sample_per_subject, dmd_modes.shape[1], dmd_modes.shape[2])
-    total_loss = 0
-    for s in range(dmd_modes.shape[0]):
-        loss = 0
-        for i in range(0, dmd_modes.shape[3], 2):
-            loss = loss + (1 - torch.mm(dmd_modes[s, :, :, i], dmd_modes[s, :, :, i].t())).mean()
-        loss = loss / dmd_modes.shape[2]
-        total_loss = total_loss + loss
-    return total_loss / dmd_modes.shape[0]
-
-
 def compute_orthogonality_loss(weight):
     return nn.MSELoss()(weight @ weight.t(), torch.eye(weight.shape[0]).to(weight.device))
 
@@ -60,9 +48,10 @@ def train_epoch_koopman(train_loader,
   """
     train_loss = []
     train_loss_recon = []
-    train_loss_ortho = []
+    train_loss_recon_embeds = []
     train_loss_pred = []
     train_loss_embedding = []
+    train_loss_embedding_lr = []
 
     for inps, tgts in train_loader:
         if len(inps.shape) == 2:
@@ -71,25 +60,30 @@ def train_epoch_koopman(train_loader,
         if rank >= 0:
             inps = inps.to(rank)
             tgts = tgts.to(rank)
+
         (_, [norm_outs,
-             norm_tgts], [norm_recons, norm_inp_preds,
-                          norm_inps], [enc_embeds,
-                                       pred_embeds], dmd_modes, _) = model(inps, tgts)
+             norm_tgts], [norm_recons,
+                          norm_inp_preds,
+                          norm_inps,
+                          norm_embeddings,
+                          norm_embedding_recons], [enc_embeds,
+                                                   pred_embeds,
+                                                   enc_embeds_lr,
+                                                   pred_embeds_lr], dmd_modes, _) = model(inps, tgts)
         loss_recon = loss_fun(norm_recons, norm_inps)
+        loss_recon_embeds = loss_fun(norm_embeddings, norm_embedding_recons)
         loss_pred = loss_fun(norm_inp_preds, norm_inps[:, 1:].unfold(
             1, norm_inp_preds.shape[-1], 1))
         loss_embedding = loss_fun(enc_embeds, pred_embeds)
+        loss_embedding_lr = loss_fun(enc_embeds_lr, pred_embeds_lr)
         loss_forward_pred = loss_fun(norm_outs, norm_tgts)
-        # if hasattr(model, 'projU') and hasattr(model, 'projV'):
-        # loss_ortho = 0.5 * compute_orthogonality_loss(m.projU.weight) + \
-        #              0.5 * compute_orthogonality_loss(m.projV.weight)
-        # else:
-        #     loss_ortho = torch.FloatTensor(0)
-        loss = loss_forward_pred + loss_recon + loss_pred + \
-               loss_embedding
+        loss = loss_forward_pred + loss_recon + \
+               loss_pred + loss_embedding
         train_loss_recon.append(loss_recon.item())
+        train_loss_recon_embeds.append(loss_recon_embeds.item())
         train_loss_pred.append(loss_pred.item())
         train_loss_embedding.append(loss_embedding.item())
+        train_loss_embedding_lr.append(loss_embedding_lr.item())
         train_loss.append(loss.item())
         optimizer.zero_grad()
         loss.backward()
@@ -98,7 +92,9 @@ def train_epoch_koopman(train_loader,
     return np.sqrt(np.mean(train_loss)), \
            np.sqrt(np.mean(train_loss_recon)), \
            np.sqrt(np.mean(train_loss_pred)), \
-           np.sqrt(np.mean(train_loss_embedding))
+           np.sqrt(np.mean(train_loss_embedding)), \
+           np.sqrt(np.mean(train_loss_embedding_lr)), \
+           np.sqrt(np.mean(train_loss_recon_embeds))
 
 
 def eval_epoch_koopman(eval_loader, model, loss_fun, rank=0):
@@ -114,6 +110,8 @@ def eval_epoch_koopman(eval_loader, model, loss_fun, rank=0):
   """
     eval_loss = []
     pred_loss = []
+    embed_lr_loss = []
+    embed_lr_pred_loss = []
     all_preds = []
     all_trues = []
     all_recon = []
@@ -127,21 +125,32 @@ def eval_epoch_koopman(eval_loader, model, loss_fun, rank=0):
         if rank >= 0:
             inps = inps.to(rank)
             tgts = tgts.to(rank)
+
         (denorm_outs, [norm_outs,
-                       norm_tgts], [norm_recons, norm_inp_preds,
-                                    norm_inps], [enc_embeds,
-                                                 pred_embeds], dmd_modes, dmd_vals) = model(inps, tgts)
+                       norm_tgts], [norm_recons,
+                                    norm_inp_preds,
+                                    norm_inps,
+                                    norm_embeddings,
+                                    norm_embedding_recons], [enc_embeds,
+                                                             pred_embeds,
+                                                             enc_embeds_lr,
+                                                             pred_embeds_lr], dmd_modes, dmd_vals) = model(inps, tgts)
 
         loss_recon = loss_fun(norm_recons, norm_inps)
+        loss_recon_embeds = loss_fun(norm_embeddings, norm_embedding_recons)
         loss_pred = loss_fun(norm_inp_preds, norm_inps[:, 1:].unfold(
             1, norm_inp_preds.shape[-1], 1))
         loss_embedding = loss_fun(enc_embeds, pred_embeds)
+        loss_embedding_lr = loss_fun(enc_embeds_lr, pred_embeds_lr)
 
         loss = loss_fun(norm_outs,
-                        norm_tgts) + loss_recon + loss_pred + loss_embedding
+                        norm_tgts) + loss_recon + \
+               loss_pred + loss_embedding
 
         eval_loss.append(loss.item())
         pred_loss.append(loss_pred.cpu().data.numpy())
+        embed_lr_loss.append(loss_recon_embeds.cpu().data.numpy())
+        embed_lr_pred_loss.append(loss_embedding_lr.cpu().data.numpy())
         all_preds.append(denorm_outs.cpu().data.numpy())
         all_trues.append(tgts.cpu().data.numpy())
         all_recon.append(norm_recons.cpu().data.numpy())
@@ -155,10 +164,10 @@ def eval_epoch_koopman(eval_loader, model, loss_fun, rank=0):
     else:
         all_dmd_modes = None
         all_dmd_vals = None
-
     return np.sqrt(np.mean(eval_loss)), np.concatenate(
-        all_preds, axis=0) if len(all_preds) else None, np.concatenate(
+        all_preds, axis=0), np.concatenate(
         all_trues, axis=0), np.concatenate(
         all_recon, axis=0), np.concatenate(
         all_recon_trues, axis=0), \
-           all_dmd_modes, all_dmd_vals, np.sqrt(np.mean(pred_loss))
+           all_dmd_modes, all_dmd_vals, np.sqrt(np.mean(pred_loss)), \
+           np.sqrt(np.mean(embed_lr_pred_loss)), np.sqrt(np.mean(embed_lr_loss))

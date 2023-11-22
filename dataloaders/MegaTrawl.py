@@ -7,6 +7,7 @@ import pandas as pd
 import torch
 from sklearn.model_selection import train_test_split
 from torch.utils.data import DataLoader
+import pickle
 
 from CONSTANTS import CONSTANTS
 
@@ -120,7 +121,7 @@ class M4Dataset(torch.utils.data.Dataset):
         self.test_lsts[i] = (item - self.ts_means[i]) / self.ts_stds[i]
       self.ts_indices = list(range(len(self.test_lsts)))
 
-    elif mode == "train" or "valid":
+    elif mode == "train" or mode == "valid":
       # shuffle slices before split
       np.random.seed(123)
       self.ts_indices = []
@@ -163,7 +164,7 @@ class MegaTrawlDataset(torch.utils.data.Dataset):
             mode="train",  # train, validation or test
             jumps=1,  # The number of skipped steps when generating samples
             parcel=50,
-            sample_per_subject=3
+            sample_per_subject=1
     ):
 
         self.input_length = input_length
@@ -177,16 +178,16 @@ class MegaTrawlDataset(torch.utils.data.Dataset):
 
         subjectIDs = np.loadtxt(
             os.path.join(CONSTANTS.HOME, "subjectIDs.txt"))
-        with open(os.path.join(CONSTANTS.HOME, "Behavioural_HCP_S1200.csv")) as f:
-            behav_vals = pd.read_csv(f)
         train_subID, test_subID = \
             train_test_split(
                 subjectIDs,
                 test_size=0.5,
                 random_state=1,
                 shuffle=True)
-        if mode == "train" or "valid":
+        if mode == "train" or mode == "valid":
             ids = train_subID
+        elif mode == "all":
+            ids = subjectIDs
         else:
             ids = test_subID
         self.ids = ids
@@ -206,14 +207,6 @@ class MegaTrawlDataset(torch.utils.data.Dataset):
                 print(f"Subject {s} has NaN values. Skipping")
                 continue
 
-            bm = behav_vals[behav_vals["Subject"] == int(s)][["CogFluidComp_AgeAdj","CogTotalComp_AgeAdj", "PMAT24_A_CR", "ReadEng_AgeAdj"]]
-            if len(bm) == 0:
-                print(f"{s} doesn't have behaviral measures. Skipping.")
-                continue
-            elif bm.isna().any().any():
-                print(f"{s} has NaN in behavioral measures. Skipping.")
-                continue
-            self.regressors[count] = bm.to_numpy()[0]
             fmri_signal[count] = signal
             count += 1
 
@@ -224,8 +217,6 @@ class MegaTrawlDataset(torch.utils.data.Dataset):
         self.regressors = self.regressors[0:count]
         self.data_lsts = (fmri_signal - fmri_signal.mean(axis=1)[:, np.newaxis]) \
                          / fmri_signal.std(axis=1)[:, np.newaxis]
-        self.regressors = (self.regressors - self.regressors.mean(axis=0)[np.newaxis]) / \
-                          self.regressors.std(axis=0)[np.newaxis]
 
         self.ts_indices = []
         for i, item in enumerate(self.data_lsts):
@@ -234,13 +225,11 @@ class MegaTrawlDataset(torch.utils.data.Dataset):
                            jumps):
                 self.ts_indices.append((i, j))
 
-        if mode == "train" or "valid":
+        if mode == "train" or mode == "valid":
             np.random.seed(123)
             idx = np.arange(0, len(self.data_lsts))
-            # np.random.shuffle(idx)
+            np.random.shuffle(idx)
             train_valid_split = int(len(idx) * 0.9)
-
-            # np.random.shuffle(self.ts_indices)
 
             # 90%-10% train-validation split
             # train_valid_split = int(len(self.ts_indices) * 0.9)
@@ -254,6 +243,7 @@ class MegaTrawlDataset(torch.utils.data.Dataset):
                 for ind in idx[train_valid_split:]:
                     ts_indices += self.ts_indices[ind * sample_per_sub: (ind + 1) * sample_per_sub]
                 self.ts_indices = ts_indices
+            np.random.shuffle(self.ts_indices)
         print(f"{mode}-data count: {len(self.ts_indices)}")
 
     def segment_generator(self):
@@ -276,22 +266,105 @@ class MegaTrawlDataset(torch.utils.data.Dataset):
             yield i, j
 
     def __len__(self):
-        if self.mode == "test":
-            return len(self.ts_indices)
-        else:
-            return self.total_subject * self.sample_per_subject
+        return len(self.ts_indices)
+        # if self.mode == "test":
+        #     return len(self.ts_indices)
+        # else:
+        #     return self.total_subject * self.sample_per_subject
 
     def __getitem__(self, index):
-        if self.mode == "test":
-            i, j = self.ts_indices[index]
-        else:
-            i, j = next(self.segment_generator())
+        i, j = self.ts_indices[index]
+        # if self.mode == "test":
+        #     i, j = self.ts_indices[index]
+        # else:
+        # i, j = next(self.segment_generator())
         x = self.data_lsts[i][j:j + self.input_length]
         y = self.data_lsts[i][j + self.input_length:j + self.input_length +
                                                     self.output_length]
-        reg = self.regressors[i]
 
-        return torch.from_numpy(x).float(), torch.from_numpy(y).float(), torch.from_numpy(reg).float()
+        return torch.from_numpy(x).float(), torch.from_numpy(y).float()
+
+
+class CrytosDataset(torch.utils.data.Dataset):
+  """Dataset class for Cryptos data."""
+
+  def __init__(
+      self,
+      input_length,  # num of input steps
+      output_length,  # forecasting horizon
+      direc,  # path to numpy data files
+      direc_test=None,  # # for testing mode, we also need to load test data.
+      mode="train",  # train, validation or test
+      jumps=10,  # number of skipped steps between two sliding windows
+      freq=None):
+
+    self.input_length = input_length
+    self.output_length = output_length
+    self.mode = mode
+
+    # First do global standardization
+    # Load training set
+    self.train_data = np.load(direc, allow_pickle=True)
+
+    # First do global standardization
+    self.ts_means, self.ts_stds = [], []
+    for i, item in enumerate(self.train_data):
+        avg, std = np.mean(
+            item, axis=0, keepdims=True), np.std(
+            item, axis=0, keepdims=True)
+        self.ts_means.append(avg)
+        self.ts_stds.append(std)
+        self.train_data[i] = (self.train_data[i] - avg) / std
+
+    self.ts_means = np.concatenate(self.ts_means, axis=0)
+    self.ts_stds = np.concatenate(self.ts_stds, axis=0)
+
+    if mode == "test":
+      self.test_lsts = np.load(direc_test, allow_pickle=True)
+      for i, item in enumerate(self.test_lsts):
+        self.test_lsts[i] = (self.test_lsts[i] -
+                             self.ts_means[i]) / self.ts_stds[i]
+
+      # change the input length (< 100) will not affect the target output
+      self.ts_indices = []
+      for i, item in enumerate(self.test_lsts):
+        for j in range(100, len(item) - output_length, output_length):
+          self.ts_indices.append((i, j))
+
+    elif mode == "train" or mode == "valid":
+      # shuffle slices before split
+      np.random.seed(123)
+      self.ts_indices = []
+      for i, item in enumerate(self.train_data):
+        for j in range(0, len(item)-input_length-output_length, jumps):
+          self.ts_indices.append((i, j))
+
+      np.random.shuffle(self.ts_indices)
+
+      # 90%-10% train-validation split
+      train_valid_split = int(len(self.ts_indices) * 0.9)
+      if mode == "train":
+        self.ts_indices = self.ts_indices[:train_valid_split]
+      elif mode == "valid":
+        self.ts_indices = self.ts_indices[train_valid_split:]
+    else:
+      raise ValueError("Mode can only be one of train, valid, test")
+    print(f"Cryptos Data Loaded!")
+
+  def __len__(self):
+    return len(self.ts_indices)
+
+  def __getitem__(self, index):
+    if self.mode == "test":
+      i, j = self.ts_indices[index]
+      x = self.test_lsts[i][j - self.input_length:j]
+      y = self.test_lsts[i][j:j + self.output_length]
+    else:
+      i, j = self.ts_indices[index]
+      x = self.train_data[i][j:j + self.input_length]
+      y = self.train_data[i][j + self.input_length:j + self.input_length +
+                             self.output_length]
+    return torch.from_numpy(x).float(), torch.from_numpy(y).float()
 
 
 class HCPTaskfMRIDataset(torch.utils.data.Dataset):
@@ -438,12 +511,12 @@ def get_DMN_Attn_ind():
 class testMegaTrawlDataset(unittest.TestCase):
     def testMegaTrawlDatashape(self):
         dataset = MegaTrawlDataset(
-            input_length=256, output_length=32,
-            mode="train", jumps=128)
-        dataloaders = DataLoader(dataset, batch_size=9, shuffle=False)
-        for src, tgt, _ in iter(dataloaders):
-            self.assertEqual(src.shape, (9, 256, 50))
-            self.assertEqual(tgt.shape, (9, 32, 50))
+            input_length=128, output_length=32,
+            mode="train", jumps=128, sample_per_subject=1)
+        dataloaders = DataLoader(dataset, batch_size=4, shuffle=False, drop_last=True)
+        for src, tgt in iter(dataloaders):
+            self.assertEqual(src.shape, (4, 128, 50))
+            self.assertEqual(tgt.shape, (4, 32, 50))
 
         correlation = []
         w = 16
@@ -468,18 +541,87 @@ class testMegaTrawlDataset(unittest.TestCase):
         plt.show()
 
 
-class testHCPTaskfMRIDataset(unittest.TestCase):
+class testCryptosDataset(unittest.TestCase):
+    def testCryptosDatashape(self):
+        dataset = CrytosDataset(
+            input_length=128, output_length=32, direc=f"{CONSTANTS.CODEDIR}/data/Cryptos/train.npy",
+            mode="train", jumps=128)
+        dataloaders = DataLoader(dataset, batch_size=4, shuffle=False, drop_last=True)
+        for src, tgt in iter(dataloaders):
+            self.assertEqual(src.shape, (4, 128, 8))
+            self.assertEqual(tgt.shape, (4, 32, 8))
+
+
+class EEGDataset(torch.utils.data.Dataset):
+    def __init__(self,
+                 input_length,  # num of input steps
+                 output_length,  # forecasting horizon
+                 mode="train",  # train, validation or test
+                 jumps=1,  # The number of skipped steps when generating samples
+                 datapath=None):
+        super().__init__()
+        self.input_length = input_length
+        self.output_length = output_length
+        self.mode = mode
+        signal_lpl = torch.Tensor(
+            pickle.load(open(os.path.join(datapath, "LPl_Data.p"), "rb"))
+        ).mean(dim=1, keepdim=True)
+        signal_pfc = torch.Tensor(
+            pickle.load(open(os.path.join(datapath, "PFC_Data.p"), "rb"))
+        ).mean(dim=1, keepdim=True)
+        signal_ppc = torch.Tensor(
+            pickle.load(open(os.path.join(datapath, "PPC_Data.p"), "rb"))
+        ).mean(dim=1, keepdim=True)
+        signal_vc = torch.Tensor(
+            pickle.load(open(os.path.join(datapath, "VC_Data.p"), "rb"))
+        ).mean(dim=1, keepdim=True)
+        signal = torch.cat([signal_vc, signal_ppc, signal_pfc, signal_lpl], dim=1)
+        signal = signal[0: -(signal.shape[0] % 128), :]
+        signal = (signal - torch.min(signal, dim=0, keepdim=True)[0]) / \
+                 (torch.max(signal, dim=0, keepdim=True)[0] - torch.min(signal, dim=0, keepdim=True)[0])
+        self.data_lsts = signal.unsqueeze(0)
+        self.ts_indices = []
+        for i, item in enumerate(self.data_lsts):
+            for j in range(0,
+                           len(item) - input_length - output_length,
+                           jumps):
+                self.ts_indices.append((i, j))
+
+        if mode == "train" or "valid":
+            np.random.seed(1)
+            np.random.shuffle(self.ts_indices)
+
+            # 90%-10% train-validation split
+            train_valid_split = int(len(self.ts_indices) * 0.9)
+            if mode == "train":
+                self.ts_indices = self.ts_indices[:train_valid_split]
+            elif mode == "valid":
+                self.ts_indices = self.ts_indices[train_valid_split:]
+        print(f"{mode}-data count: {len(self.ts_indices)}")
+
+    def __len__(self):
+        return len(self.ts_indices)
+
+    def __getitem__(self, index):
+        i, j = self.ts_indices[index]
+        x = self.data_lsts[i][j:j + self.input_length]
+        y = self.data_lsts[i][j + self.input_length:j + self.input_length +
+                                                    self.output_length]
+        return x, y
+
+
+class testEEG(unittest.TestCase):
     def testDataShape(self):
-        datapath = "/Users/mturja/Downloads/"
-        dataset = HCPTaskfMRIDataset(
-            input_length=24,
-            output_length=12,
+        datapath = "/Users/mturja/PycharmProjects/KVAE/data/EEG"
+        dataset = EEGDataset(
+            input_length=512,
+            output_length=64,
             mode="train",
-            jumps=36,
+            jumps=256,
             datapath=datapath
         )
         dataloaders = DataLoader(dataset, batch_size=2, shuffle=True)
 
         src, tgt = next(iter(dataloaders))
-        self.assertEqual(src.shape, (2, 24, 268))
-        self.assertEqual(tgt.shape, (2, 12, 268))
+        self.assertEqual(src.shape, (2, 512, 4))
+        self.assertEqual(tgt.shape, (2, 64, 4))

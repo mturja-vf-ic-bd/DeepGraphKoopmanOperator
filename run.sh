@@ -24,3 +24,7 @@ python3 -m trainers.varKNF --seed=901 --data_freq="Daily" --dataset="M4" --outpu
 
 python3 -m trainers.varKNF --seed=901 --data_freq="Weekly" --dataset="M4" --train_output_length=10 --test_output_length=13 --input_dim=5 --stride=5 --input_length=90 --n_real_modes 10 --n_complex_modes 10 --hidden_dim=256 --num_layers=5 --latent_dim=64 --num_sins=4 --num_poly=4 --num_exp=2 --num_feats=1 --lr=0.0003 --batch_size=1024 --jumps=3 --decay_rate=0.85 &>> DKO_M4_dim5_inp90_rm10.txt
 python3 -m trainers.varKNF --seed=901 --data_freq="Daily" --dataset="M4" --output_length=6 --input_dim=3 --input_length=18 --hidden_dim=128 --num_layers=4 --transformer_dim=128 --control_hidden_dim=64 --latent_dim=8 --lr=0.005 --batch_size=256 --jumps=5 --batch_size=1408 --decay_rate=0.85 --num_steps=6 --num_sins=2 &
+
+
+# DDMD
+python3 -m trainers.DeepDMD --seed=902 -m 100 --dmd_rank=64 --lr=0.0003 --batch_size=512 --stride=4 --input_dim=8 --input_length=128 --decay=1.0 --num_steps=32 --latent_dim=128 --hidden_dim=1024 --num_layers=3 --train_output_length=32 --test_output_length=32 --use_revin --jumps=128 --min_epochs=50 --mode=train &> DDMD_dim8_stride4_inp128_seed902_rank64Ortho.txt
